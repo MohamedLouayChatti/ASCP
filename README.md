@@ -15,17 +15,7 @@ Its job is simple:
 
 Layer B does not execute tools. It decides whether a capability, resource read, or prompt access is permitted.
 
-## What Files Matter
 
-If you only care about Layer B, these are the important files:
-
-- [layer_b.py](/c:/ML/ascp/layer_b.py)
-- [apps/gateway/middleware/pep_tool.py](/c:/ML/ascp/apps/gateway/middleware/pep_tool.py)
-- [policy/tool_permissions.yaml](/c:/ML/ascp/policy/tool_permissions.yaml)
-- [examples/layer_b_only.py](/c:/ML/ascp/examples/layer_b_only.py)
-- [tests/test_layer_b_only.py](/c:/ML/ascp/tests/test_layer_b_only.py)
-- [tests/test_contracts.py](/c:/ML/ascp/tests/test_contracts.py)
-- the schemas in [/c:/ML/ascp/schemas](/c:/ML/ascp/schemas)
 
 ## Architecture
 
