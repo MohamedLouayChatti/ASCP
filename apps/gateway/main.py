@@ -92,6 +92,11 @@ async def lifespan(app: FastAPI):
         _contract_validator = ContractValidator(
             settings.tool_permissions_path,
             settings.schemas_dir,
+          langwatch_enabled=settings.langwatch_enabled,
+          langwatch_api_key=settings.langwatch_api_key,
+          langwatch_endpoint=settings.langwatch_endpoint,
+          langwatch_project=settings.langwatch_project,
+          langwatch_debug=settings.langwatch_debug,
         )
         _policy_editor = PolicyEditor(settings.tool_permissions_path)
         _canary_seeder = CanarySeeder()

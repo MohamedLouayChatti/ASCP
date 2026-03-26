@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,15 @@ class LayerBPolicy:
         self.paths = LayerBPaths(policy_path=policy_path, schemas_dir=schemas_dir)
 
     def load(self) -> ContractValidator:
-        return ContractValidator(self.paths.policy_path, self.paths.schemas_dir)
+        return ContractValidator(
+            self.paths.policy_path,
+            self.paths.schemas_dir,
+            langwatch_enabled=bool(os.getenv("LANGWATCH_KEY") or os.getenv("LANGWATCH_API_KEY")),
+            langwatch_api_key=os.getenv("LANGWATCH_KEY") or os.getenv("LANGWATCH_API_KEY"),
+            langwatch_endpoint=os.getenv("LANGWATCH_ENDPOINT"),
+            langwatch_project=os.getenv("LANGWATCH_PROJECT", "ascp"),
+            langwatch_debug=str(os.getenv("LANGWATCH_DEBUG", "")).lower() in {"1", "true", "yes", "on"},
+        )
 
 
 class LayerBEngine:
