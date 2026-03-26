@@ -7,11 +7,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
-
+import os
+from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
+load_dotenv()  # Load .env file if present
 class ASCPSettings(BaseSettings):
     """Central settings loaded from environment / .env."""
 
@@ -57,8 +58,8 @@ class ASCPSettings(BaseSettings):
     approval_required_default: bool = True
 
     # LangWatch
-    langwatch_enabled: bool = False
-    langwatch_api_key: str = Field(default="", alias="LANGWATCH_API_KEY")
+    langwatch_enabled: bool = True
+    langwatch_api_key: str = os.getenv("LANGWATCH_KEY", "")
     langwatch_endpoint: str = "https://app.langwatch.ai"
     langwatch_project: str = "ascp"
     langwatch_debug: bool = False

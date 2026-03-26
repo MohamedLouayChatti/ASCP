@@ -1,2 +1,7 @@
 *__pycache__
 *.pyc
+
+*cache*
+*.log
+*.env
+.coverage
