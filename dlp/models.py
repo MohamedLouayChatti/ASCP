@@ -18,7 +18,6 @@ class DLPAction(Enum):
     def priority(self) -> int:
         return self.value
 
-    # Allow comparison based on priority
     def __lt__(self, other: "DLPAction") -> bool:
         return self.priority < other.priority
 
@@ -35,11 +34,15 @@ class DLPAction(Enum):
 @dataclass
 class DLPMatch:
     pattern_name: str
-    category: str  # "secret" or "pii"
+    category: str           # "secret" or "pii"
     action: DLPAction
-    value: str     # The actual matched string
-    spans: list[tuple[int, int]]  # List of (start, end) tuples
+    value: str              # The actual matched string
+    spans: list[tuple[int, int]]
     surface: ScanSurface
+    # Structured-scan attribution: dot/bracket JSON path ("records[2].user.email")
+    source_path: str | None = None
+    # Set by EntropyScanner; None for regex/NER matches
+    entropy_score: float | None = None
 
 
 @dataclass
@@ -47,6 +50,17 @@ class CanaryHit:
     token: str
     label: str
     context_excerpt: str
+    surface: ScanSurface
+    # True when detected by fuzzy/normalised matching rather than exact text.find()
+    fuzzy: bool = False
+
+
+@dataclass
+class FingerprintHit:
+    """Raised when model output reproduces a significant portion of a source document."""
+    doc_id: str
+    overlap_ratio: float    # fraction of the doc's trigrams found in the output
+    matched_trigrams: int
     surface: ScanSurface
 
 
@@ -60,10 +74,16 @@ class DLPResult:
     secret_matches: list[DLPMatch] = field(default_factory=list)
     pii_matches: list[DLPMatch] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
+    fingerprint_hits: list[FingerprintHit] = field(default_factory=list)
 
     @property
     def has_violations(self) -> bool:
-        return bool(self.canary_hits or self.secret_matches or self.pii_matches)
+        return bool(
+            self.canary_hits
+            or self.secret_matches
+            or self.pii_matches
+            or self.fingerprint_hits
+        )
 
     @property
     def should_block(self) -> bool:

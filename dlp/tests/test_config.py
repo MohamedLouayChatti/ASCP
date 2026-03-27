@@ -75,7 +75,7 @@ class TestConfigErrorPaths(unittest.TestCase):
         self.assertEqual(config.secrets_action, DLPAction.BLOCK)
         self.assertEqual(config.pii_action, DLPAction.REDACT)
         self.assertEqual(len(config.secret_patterns), 3)
-        self.assertEqual(len(config.pii_patterns), 2)
+        self.assertEqual(len(config.pii_patterns), 3)  # email, ipv4, credit_card
 
     def test_load_invalid_yaml_syntax_returns_defaults(self):
         """Test that invalid YAML syntax gracefully falls back to defaults."""
