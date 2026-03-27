@@ -1,5 +1,3 @@
-from typing import List
-
 from .models import DLPResult, DLPMatch, CanaryHit, ScanSurface, DLPAction
 from .config import DLPConfig
 from .canary import CanaryEngine
@@ -21,8 +19,8 @@ class DLPScanner:
         """
         canary_hits = self.canary_engine.detect(text, surface)
         
-        secret_matches: List[DLPMatch] = []
-        pii_matches: List[DLPMatch] = []
+        secret_matches: list[DLPMatch] = []
+        pii_matches: list[DLPMatch] = []
         
         # Determine current worst action to see if we should short-circuit
         current_action = DLPAction.ALLOW
@@ -30,10 +28,14 @@ class DLPScanner:
             current_action = max(current_action, self.config.canary_action)
 
         # We can do regex scan for both secrets and PII via pattern_engine.scan_text
-        # which returns both match lists and the redacted string
-        regex_matches, redacted_text = self.pattern_engine.scan_text(text, surface)
+        regex_matches, _ = self.pattern_engine.scan_text(text, surface)
         
+        all_redactions = []
         for m in regex_matches:
+            if m.action == DLPAction.REDACT:
+                for span in m.spans:
+                    all_redactions.append((span[0], span[1], f"[REDACTED_{m.category}_{m.pattern_name}]"))
+            
             if m.category == "secret":
                 secret_matches.append(m)
                 current_action = max(current_action, m.action)
@@ -62,13 +64,12 @@ class DLPScanner:
                     
                     # Apply redaction for the NER hit
                     if nm.action == DLPAction.REDACT:
-                         # Simple replacement for NER redactions if we need to
-                         # Note: doing it post-hoc on 'redacted_text' is tricky due to offsets changing,
-                         # but since we only care if it's REDACT and not BLOCK, we can just replace the string value directly.
-                         # A more robust approach integrates NER into PatternEngine's single pass,
-                         # but for now we do string replacement for newly found NER matches
                          placeholder = f"[REDACTED_pii_{nm.pattern_name}]"
-                         redacted_text = redacted_text.replace(nm.value, placeholder)
+                         all_redactions.append((nm_span[0], nm_span[1], placeholder))
+
+        # Apply all redactions together
+        from .patterns import PatternEngine
+        redacted_text = PatternEngine.apply_redactions(text, all_redactions)
 
         # Construct Violations for Telemetry
         violations = []

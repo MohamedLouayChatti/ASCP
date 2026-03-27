@@ -1,5 +1,4 @@
 import logging
-from typing import List, Optional
 
 from .models import DLPMatch, DLPAction, ScanSurface
 from .config import DLPConfig
@@ -40,7 +39,7 @@ class NERDetector:
             self._load_failed = True
             return False
 
-    def detect(self, text: str, surface: ScanSurface) -> List[DLPMatch]:
+    def detect(self, text: str, surface: ScanSurface) -> list[DLPMatch]:
         """Detects Named Entities that are PII."""
         if not self._load():
             return []

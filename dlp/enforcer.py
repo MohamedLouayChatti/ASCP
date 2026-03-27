@@ -26,7 +26,7 @@ class PolicyEnforcer:
                 final_action = DLPAction.REDACT
 
         should_block = (final_action == DLPAction.BLOCK)
-        should_escalate = (final_action >= DLPAction.ESCALATE) # BLOCK also escalates implicitly or optionally
+        should_escalate = (final_action == DLPAction.ESCALATE)
 
         # Safe messaging
         safe_message = None
@@ -53,5 +53,6 @@ class PolicyEnforcer:
             should_block=should_block,
             should_escalate=should_escalate,
             safe_message=safe_message,
-            escalation_event=escalation_event
+            escalation_event=escalation_event,
+            dlp_result=result
         )

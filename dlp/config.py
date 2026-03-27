@@ -1,7 +1,7 @@
-import yaml
+import logging
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Dict, Any
+from typing import Any
 
 from .models import DLPAction
 
@@ -19,8 +19,9 @@ class DLPConfig:
     secrets_action: DLPAction
     pii_action: DLPAction
     enable_ner: bool
-    secret_patterns: List[PatternDef] = field(default_factory=list)
-    pii_patterns: List[PatternDef] = field(default_factory=list)
+    secret_patterns: list[PatternDef] = field(default_factory=list)
+    pii_patterns: list[PatternDef] = field(default_factory=list)
+    canary_labels: list[str] = field(default_factory=lambda: ["api_credential_mock", "db_password", "sys_admin_token"])
 
     @classmethod
     def defaults(cls) -> "DLPConfig":
@@ -39,7 +40,8 @@ class DLPConfig:
             pii_patterns=[
                 PatternDef(name="email", regex=r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]*[a-zA-Z0-9-]"),
                 PatternDef(name="ipv4", regex=r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
-            ]
+            ],
+            canary_labels=["api_credential_mock", "db_password", "sys_admin_token"]
         )
 
 
@@ -53,6 +55,12 @@ def _parse_action(action_str: str) -> DLPAction:
 def load_dlp_config(policy_path: Path) -> DLPConfig:
     """Loads the DLP configuration from a YAML policy file."""
     if not policy_path.exists():
+        return DLPConfig.defaults()
+
+    try:
+        import yaml
+    except ImportError:
+        logging.critical("PyYAML is not installed. Loading defaults.")
         return DLPConfig.defaults()
 
     with open(policy_path, "r", encoding="utf-8") as f:
@@ -73,6 +81,9 @@ def load_dlp_config(policy_path: Path) -> DLPConfig:
         for p in dlp_data.get("pii_patterns", [])
     ]
 
+    if not secret_patterns and not pii_patterns:
+        logging.critical("Both secret_patterns and pii_patterns are empty in the DLP config. The scanner will not catch any regex-based violations.")
+
     return DLPConfig(
         canary_action=_parse_action(dlp_data.get("canary_action", "BLOCK")),
         canary_salt=dlp_data.get("canary_salt", "default_insecure_salt_replace_in_prod"),
@@ -81,4 +92,5 @@ def load_dlp_config(policy_path: Path) -> DLPConfig:
         enable_ner=dlp_data.get("enable_ner", False),
         secret_patterns=secret_patterns,
         pii_patterns=pii_patterns,
+        canary_labels=dlp_data.get("canary_labels", ["api_credential_mock", "db_password", "sys_admin_token"])
     )

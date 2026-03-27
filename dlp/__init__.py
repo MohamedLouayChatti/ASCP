@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .models import ScanSurface, EnforcementDecision, DLPResult
 from .config import load_dlp_config
@@ -8,16 +8,14 @@ from .canary import CanaryEngine
 from .scanner import DLPScanner
 from .enforcer import PolicyEnforcer
 
-_scanner: Optional[DLPScanner] = None
-_enforcer: Optional[PolicyEnforcer] = None
-_canary_engine: Optional[CanaryEngine] = None
+_scanner: DLPScanner | None = None
+_enforcer: PolicyEnforcer | None = None
+_canary_engine: CanaryEngine | None = None
 
 
 def init(config_path: Path) -> None:
     """Initialize the DLP module with a given policy file."""
     global _scanner, _enforcer, _canary_engine
-    if _scanner is not None:
-        return
     config = load_dlp_config(config_path)
     _canary_engine = CanaryEngine(config)
     _scanner = DLPScanner(config, _canary_engine)
@@ -30,7 +28,7 @@ def _ensure_initialized() -> None:
         init(Path("nonexistent_default.yaml"))
 
 
-def inject_canaries_into_context(docs: List[Dict[str, str]]) -> List[Dict[str, str]]:
+def inject_canaries_into_context(docs: list[dict[str, str]]) -> tuple[list[dict[str, str]], str | None, str | None]:
     """Injects canary tokens into retrieved context to track potential leakage."""
     _ensure_initialized()
     assert _canary_engine is not None
@@ -45,7 +43,7 @@ def scan_output(text: str) -> EnforcementDecision:
     return _enforcer.enforce(result)
 
 
-def scan_tool_args(tool_name: str, args: Dict[str, Any]) -> EnforcementDecision:
+def scan_tool_args(tool_name: str, args: dict[str, Any]) -> EnforcementDecision:
     """Scans pending tool arguments before execution."""
     _ensure_initialized()
     assert _scanner is not None and _enforcer is not None

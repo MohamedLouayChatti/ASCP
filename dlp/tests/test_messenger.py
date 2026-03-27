@@ -47,5 +47,29 @@ class TestSafeMessenger(unittest.TestCase):
         msg = self.messenger.get_message(res)
         self.assertEqual(msg, "TOOL_BLOCKED_SECRET_VIOLATION")
 
+    def test_pii_only_message(self):
+        pii_hit = DLPMatch(
+            pattern_name="email", category="pii", action=DLPAction.REDACT,
+            value="test@example.com", spans=[(0, 16)], surface=ScanSurface.OUTPUT
+        )
+        res = DLPResult(
+            original_text="test@example.com", clean_text="[REDACTED_pii_email]", action=DLPAction.REDACT,
+            surface=ScanSurface.OUTPUT, pii_matches=[pii_hit]
+        )
+        msg = self.messenger.get_message(res)
+        self.assertEqual(msg, "Some personal information was removed from this response.")
+
+    def test_escalate_message(self):
+        secret_hit = DLPMatch(
+            pattern_name="openai_key", category="secret", action=DLPAction.ESCALATE,
+            value="sk-XXX", spans=[(0, 5)], surface=ScanSurface.OUTPUT
+        )
+        res = DLPResult(
+            original_text="sk-XXX", clean_text="", action=DLPAction.ESCALATE,
+            surface=ScanSurface.OUTPUT, secret_matches=[secret_hit]
+        )
+        msg = self.messenger.get_message(res)
+        self.assertEqual(msg, "This request has been blocked and flagged for review.")
+
 if __name__ == '__main__':
     unittest.main()

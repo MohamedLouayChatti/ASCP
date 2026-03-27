@@ -1,6 +1,5 @@
 import hashlib
-import random
-from typing import List, Dict, Tuple, Optional
+import secrets
 from copy import deepcopy
 
 from .models import CanaryHit, ScanSurface
@@ -9,14 +8,11 @@ from .config import DLPConfig
 class CanaryEngine:
     def __init__(self, config: DLPConfig):
         self._salt = config.canary_salt
-        self._token_to_label: Dict[str, str] = {}
-        self._label_to_token: Dict[str, str] = {}
-        
-        # Keep track of what was injected recently (in a real system, per-session/per-request)
-        self._last_injected: Optional[str] = None
+        self._token_to_label: dict[str, str] = {}
+        self._label_to_token: dict[str, str] = {}
         
         # Seed default labels
-        self.seed(["api_credential_mock", "db_password", "sys_admin_token"])
+        self.seed(config.canary_labels if hasattr(config, 'canary_labels') and config.canary_labels else ["api_credential_mock", "db_password", "sys_admin_token"])
 
     def _generate_token(self, label: str) -> str:
         """Deterministically generates a canary token for a given label and salt."""
@@ -24,7 +20,7 @@ class CanaryEngine:
         hash_hex = hashlib.sha256(raw).hexdigest()[:16]
         return f"CANARY-{hash_hex}"
 
-    def seed(self, labels: List[str]) -> None:
+    def seed(self, labels: list[str]) -> None:
         """Seeds the engine with a list of canary labels."""
         for label in labels:
             token = self._generate_token(label)
@@ -43,22 +39,23 @@ class CanaryEngine:
         self._label_to_token.clear()
         self.seed(labels)
 
-    def inject_into_context(self, docs: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def inject_into_context(self, docs: list[dict[str, str]]) -> tuple[list[dict[str, str]], str | None, str | None]:
         """
         Selects one document and embeds a plain-text canary token into it.
         Survives HTML stripping because it's plain text.
+        Returns the modified docs, the injected token, and its label.
         """
         if not docs or not self._label_to_token:
-            return docs
+            return docs, None, None
 
         docs_copy = deepcopy(docs)
         
         # Pick a random document to inject into
-        doc_idx = random.randint(0, len(docs_copy) - 1)
+        doc_idx = secrets.randbelow(len(docs_copy))
         target_doc = docs_copy[doc_idx]
         
         # Pick a random label
-        label = random.choice(list(self._label_to_token.keys()))
+        label = secrets.choice(list(self._label_to_token.keys()))
         token = self._label_to_token[label]
         
         # Plain-text injection
@@ -72,10 +69,9 @@ class CanaryEngine:
             # Fallback if we don't know the schema
             target_doc["_canary"] = injection_text
             
-        self._last_injected = token
-        return docs_copy
+        return docs_copy, token, label
 
-    def detect(self, text: str, surface: ScanSurface) -> List[CanaryHit]:
+    def detect(self, text: str, surface: ScanSurface) -> list[CanaryHit]:
         """
         Scans text for all seeded canary tokens.
         """

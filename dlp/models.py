@@ -1,6 +1,5 @@
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
 
 
 class ScanSurface(Enum):
@@ -39,7 +38,7 @@ class DLPMatch:
     category: str  # "secret" or "pii"
     action: DLPAction
     value: str     # The actual matched string
-    spans: List[Tuple[int, int]]  # List of (start, end) tuples
+    spans: list[tuple[int, int]]  # List of (start, end) tuples
     surface: ScanSurface
 
 
@@ -57,10 +56,10 @@ class DLPResult:
     clean_text: str
     action: DLPAction
     surface: ScanSurface
-    canary_hits: List[CanaryHit] = field(default_factory=list)
-    secret_matches: List[DLPMatch] = field(default_factory=list)
-    pii_matches: List[DLPMatch] = field(default_factory=list)
-    violations: List[str] = field(default_factory=list)
+    canary_hits: list[CanaryHit] = field(default_factory=list)
+    secret_matches: list[DLPMatch] = field(default_factory=list)
+    pii_matches: list[DLPMatch] = field(default_factory=list)
+    violations: list[str] = field(default_factory=list)
 
     @property
     def has_violations(self) -> bool:
@@ -71,7 +70,7 @@ class DLPResult:
         return self.action == DLPAction.BLOCK
 
     @property
-    def invariant_violated(self) -> Optional[str]:
+    def invariant_violated(self) -> str | None:
         if self.canary_hits or self.secret_matches:
             return "I3"
         return None
@@ -81,8 +80,9 @@ class DLPResult:
 class EnforcementDecision:
     action: DLPAction
     clean_text: str
-    violations: List[str]
+    violations: list[str]
     should_block: bool
     should_escalate: bool
-    safe_message: Optional[str] = None
-    escalation_event: Optional[dict] = None
+    safe_message: str | None = None
+    escalation_event: dict | None = None
+    dlp_result: DLPResult | None = None
