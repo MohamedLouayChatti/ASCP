@@ -71,6 +71,77 @@ def test_unknown_capability_can_be_allowed_in_discover_only_mode() -> None:
     assert result.sanitized_args == {"query": "hello"}
 
 
+def test_unknown_capability_blocks_path_traversal_before_mode_allow() -> None:
+    validator = _make_validator("path-traversal", unknown_capability_mode="sandbox_allow")
+
+    result = validator.validate_call("unknown_tool", {"path": "../secrets.txt"})
+
+    assert result.decision == ContractDecision.BLOCK
+    assert result.reason_code == "PATH_TRAVERSAL"
+
+
+def test_unknown_capability_blocks_ssrf_style_url_before_mode_allow() -> None:
+    validator = _make_validator("ssrf", unknown_capability_mode="discover_only")
+
+    result = validator.validate_call("unknown_tool", {"url": "http://169.254.169.254/latest/meta-data"})
+
+    assert result.decision == ContractDecision.BLOCK
+    assert result.reason_code == "DOMAIN_POLICY_VIOLATION"
+
+
+def test_unknown_capability_blocks_unsafe_sql_before_mode_allow() -> None:
+    validator = _make_validator("sql", unknown_capability_mode="sandbox_allow")
+
+    result = validator.validate_call("unknown_tool", {"sql": "DROP TABLE users"})
+
+    assert result.decision == ContractDecision.BLOCK
+    assert result.reason_code == "SQL_POLICY_VIOLATION"
+
+
+def test_unknown_capability_blocks_large_body_before_mode_allow() -> None:
+    validator = _make_validator("large-body", unknown_capability_mode="discover_only")
+
+    result = validator.validate_call("unknown_tool", {"body": "x" * 4001})
+
+    assert result.decision == ContractDecision.BLOCK
+    assert result.reason_code == "CONTENT_TOO_LARGE"
+
+
+def test_dangerous_unknown_args_escalate_sandbox_allow_to_require_approval() -> None:
+    validator = _make_validator("dangerous-sandbox", unknown_capability_mode="sandbox_allow")
+
+    result = validator.validate_call("unknown_tool", {"command": "ls"})
+
+    assert result.decision == ContractDecision.REQUIRE_APPROVAL
+    assert result.reason_code == "APPROVAL_REQUIRED"
+    assert result.approval_token
+
+
+def test_dangerous_unknown_args_escalate_discover_only_to_require_approval() -> None:
+    validator = _make_validator("dangerous-discover", unknown_capability_mode="discover_only")
+
+    result = validator.validate_call("unknown_tool", {"script": "print('hi')"})
+
+    assert result.decision == ContractDecision.REQUIRE_APPROVAL
+    assert result.reason_code == "APPROVAL_REQUIRED"
+    assert result.approval_token
+
+
+def test_dangerous_unknown_args_can_proceed_after_approval_in_sandbox_allow_mode() -> None:
+    validator = _make_validator("dangerous-approved", unknown_capability_mode="sandbox_allow")
+
+    approval = validator.validate_call("unknown_tool", {"command": "ls"})
+    result = validator.validate_call(
+        "unknown_tool",
+        {"command": "ls"},
+        approval_token=approval.approval_token,
+    )
+
+    assert approval.decision == ContractDecision.REQUIRE_APPROVAL
+    assert result.decision == ContractDecision.ALLOW
+    assert result.reason_code == "UNKNOWN_CAPABILITY_SANDBOX_ALLOWED"
+
+
 def test_unknown_capability_approval_token_round_trip_still_works() -> None:
     validator = _make_validator("approval-round-trip", unknown_capability_mode="require_approval")
 

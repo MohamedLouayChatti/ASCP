@@ -66,6 +66,17 @@ _UNKNOWN_CAPABILITY_MODES: tuple[UnknownCapabilityMode, ...] = (
     "sandbox_allow",
     "discover_only",
 )
+_UNKNOWN_CAPABILITY_BASELINE_MAX_BODY_CHARS = 4000
+_DANGEROUS_UNKNOWN_ARG_NAMES = frozenset(
+    {
+        "command",
+        "code",
+        "exec",
+        "eval",
+        "template",
+        "script",
+    }
+)
 
 
 class PolicyValidationError(ValueError):
@@ -1406,6 +1417,54 @@ class ContractValidator:
             sanitized_args=copy.deepcopy(args),
         )
 
+    def _dangerous_unknown_arg_names(self, args: dict[str, Any]) -> list[str]:
+        return sorted(
+            {
+                str(key).strip().lower()
+                for key in args
+                if str(key).strip().lower() in _DANGEROUS_UNKNOWN_ARG_NAMES
+            }
+        )
+
+    def _apply_baseline_guardrails(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        approval_token: str | None = None,
+    ) -> ContractResult | None:
+        baseline_result = self._validate_common_constraints(
+            tool_name,
+            args,
+            {"max_body_chars": _UNKNOWN_CAPABILITY_BASELINE_MAX_BODY_CHARS},
+        )
+        if baseline_result is not None:
+            return baseline_result
+
+        dangerous_args = self._dangerous_unknown_arg_names(args)
+        if not dangerous_args:
+            return None
+
+        if self._unknown_capability_mode not in ("sandbox_allow", "discover_only"):
+            return None
+
+        logger.warning(
+            "Capability '%s' is not registered and includes dangerous args=%s; approval required.",
+            tool_name,
+            dangerous_args,
+        )
+        return self._issue_or_validate_approval(
+            component_type=ComponentType.TOOL.value,
+            component_name=tool_name,
+            args=args,
+            approval_token=approval_token,
+            approval_required=True,
+            details=(
+                f"Capability '{tool_name}' is not registered and includes dangerous "
+                f"arguments: {', '.join(dangerous_args)}."
+            ),
+        )
+
     def _handle_unknown_capability(
         self,
         tool_name: str,
@@ -1493,6 +1552,21 @@ class ContractValidator:
         self._maybe_reload()
 
         if tool_name not in self._capability_permissions:
+            baseline_result = self._apply_baseline_guardrails(
+                tool_name,
+                args,
+                approval_token=approval_token,
+            )
+            if baseline_result is not None:
+                return self._finalize_result(
+                    component_type=ComponentType.TOOL.value,
+                    component_name=tool_name,
+                    args=args,
+                    result=baseline_result,
+                    agent_id=agent_id,
+                    framework=framework,
+                    invocation_context=invocation_context,
+                )
             return self._finalize_result(
                 component_type=ComponentType.TOOL.value,
                 component_name=tool_name,
