@@ -63,8 +63,12 @@ def load_dlp_config(policy_path: Path) -> DLPConfig:
         logging.critical("PyYAML is not installed. Loading defaults.")
         return DLPConfig.defaults()
 
-    with open(policy_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    try:
+        with open(policy_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except (yaml.YAMLError, IOError) as e:
+        logging.critical(f"Failed to parse YAML policy file: {e}. Loading defaults.")
+        return DLPConfig.defaults()
 
     if not data or "dlp" not in data:
         return DLPConfig.defaults()
