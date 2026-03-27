@@ -338,20 +338,29 @@ class TestNERDetectorWithMock(unittest.TestCase):
         self.assertEqual(matches[0].action, DLPAction.BLOCK)
 
 
+    def test_ner_spacy_load_generic_exception(self):
+        """Test fallback on generic exception gracefully."""
+        self.config.enable_ner = True
+        detector = NERDetector(self.config)
+        
+        with patch('spacy.util.is_package', side_effect=Exception("Disk corrupted")):
+            result = detector._load()
+            self.assertFalse(result)
+            self.assertTrue(detector._load_failed)
+
 class TestNERDetectorWithRealModel(unittest.TestCase):
-    """Integration tests with real spaCy model (if available)."""
+    """Integration tests with real spaCy model."""
     
     def setUp(self):
         self.config = DLPConfig.defaults()
         self.config.enable_ner = True
         
-    @unittest.skipUnless(_is_spacy_model_available(), "spaCy model not available")
     def test_real_ner_person_detection(self):
         """Test with actual spaCy model on real text."""
         detector = NERDetector(self.config)
         
         if not detector._load():
-            self.skipTest("spaCy model could not be loaded")
+            self.fail("spaCy model could not be loaded - required for real tests")
         
         text = "John Smith works at Microsoft in Seattle."
         matches = detector.detect(text, ScanSurface.OUTPUT)
@@ -361,30 +370,38 @@ class TestNERDetectorWithRealModel(unittest.TestCase):
         
         # Check that we have relevant PII matches
         pattern_names = {m.pattern_name for m in matches}
-        self.assertTrue(any(name.startswith("ner_") for name in pattern_names))
+        self.assertIn("ner_person", pattern_names)
+        self.assertIn("ner_org", pattern_names)
+        self.assertIn("ner_gpe", pattern_names)
     
-    @unittest.skipUnless(_is_spacy_model_available(), "spaCy model not available")
     def test_real_ner_multiple_people(self):
         """Test detection of multiple people with real model."""
         detector = NERDetector(self.config)
         
         if not detector._load():
-            self.skipTest("spaCy model could not be loaded")
+            self.fail("spaCy model could not be loaded")
         
-        text = "Alice and Bob met with Carol at Google."
+        # spaCy's en_core_web_sm sometimes misclassifies "Carol at Google" as PRODUCT or skips.
+        # "Michael, Sarah, and Jessica" works reliably.
+        text = "Michael met with Sarah and Jessica at Google."
         matches = detector.detect(text, ScanSurface.OUTPUT)
         
         # Verify we get some matches
         self.assertGreater(len(matches), 0)
         self.assertEqual(all(m.category == "pii" for m in matches), True)
+        
+        # People should be detected
+        person_matches = [m.value for m in matches if m.pattern_name == "ner_person"]
+        self.assertIn("Michael", person_matches)
+        self.assertIn("Sarah", person_matches)
+        self.assertIn("Jessica", person_matches)
     
-    @unittest.skipUnless(_is_spacy_model_available(), "spaCy model not available")
     def test_real_ner_span_accuracy(self):
         """Test that spans are correctly calculated."""
         detector = NERDetector(self.config)
         
         if not detector._load():
-            self.skipTest("spaCy model could not be loaded")
+            self.fail("spaCy model could not be loaded")
         
         text = "Contact John Smith immediately."
         matches = detector.detect(text, ScanSurface.OUTPUT)
@@ -392,13 +409,60 @@ class TestNERDetectorWithRealModel(unittest.TestCase):
         # Find person matches
         person_matches = [m for m in matches if m.pattern_name == "ner_person"]
         
-        if person_matches:
-            match = person_matches[0]
-            # Verify span extraction is correct
-            for start, end in match.spans:
-                extracted = text[start:end]
-                self.assertEqual(extracted, match.value)
+        self.assertGreater(len(person_matches), 0)
+        match = person_matches[0]
+        # Verify span extraction is correct
+        for start, end in match.spans:
+            extracted = text[start:end]
+            self.assertEqual(extracted, match.value)
 
+    def test_real_ner_all_entity_types(self):
+        """Test that the real model correctly flags all PII entity types."""
+        detector = NERDetector(self.config)
+        if not detector._load():
+            self.fail("spaCy model could not be loaded")
+            
+        text = "On January 15, 2024, Albert Einstein visited Mount Everest in Nepal for the United Nations."
+        matches = detector.detect(text, ScanSurface.OUTPUT)
+        
+        pattern_names = {m.pattern_name for m in matches}
+        extracted_values = {m.value for m in matches}
+        
+        self.assertIn("ner_date", pattern_names)
+        self.assertIn("ner_person", pattern_names)
+        self.assertIn("ner_loc", pattern_names)
+        self.assertIn("ner_gpe", pattern_names)
+        self.assertIn("ner_org", pattern_names)
+        
+        # Checking some specific text extracts just to be absolutely sure the NER works perfectly:
+        self.assertTrue(any("Albert Einstein" in val for val in extracted_values))
+        self.assertTrue(any("Mount Everest" in val for val in extracted_values))
+        self.assertTrue(any("Nepal" in val for val in extracted_values))
+        self.assertTrue(any("United Nations" in val for val in extracted_values))
+
+    def test_real_ner_skips_non_pii(self):
+        """Ensure standard nouns and non-PII labels aren't flagged as PII by default."""
+        detector = NERDetector(self.config)
+        if not detector._load():
+            self.fail("spaCy model could not be loaded")
+            
+        # "Apple" is often PRODUCT or ORG depending on context; "laptop" is nothing/object.
+        # "$100" is MONEY. "three" is CARDINAL. Non-PII labels shouldn't be matched.
+        text = "I bought a cool laptop for $100."
+        matches = detector.detect(text, ScanSurface.OUTPUT)
+        
+        # The default config only allows PERSON, ORG, GPE, LOC, DATE, EMAIL, PHONE
+        self.assertEqual(len(matches), 0)
+
+    def test_real_ner_empty_or_whitespace(self):
+        """Real model handles empty and whitespace safely."""
+        detector = NERDetector(self.config)
+        
+        matches = detector.detect("", ScanSurface.OUTPUT)
+        self.assertEqual(len(matches), 0)
+        
+        matches = detector.detect("   \n\t  ", ScanSurface.OUTPUT)
+        self.assertEqual(len(matches), 0)
 
 if __name__ == '__main__':
     unittest.main()
