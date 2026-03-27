@@ -46,6 +46,7 @@ class LayerBPolicy:
         return ContractValidator(
             self.paths.policy_path,
             self.paths.schemas_dir,
+            unknown_capability_mode=os.getenv("ASCP_UNKNOWN_CAPABILITY_MODE", "require_approval"),
             langwatch_enabled=bool(os.getenv("LANGWATCH_KEY") or os.getenv("LANGWATCH_API_KEY")),
             langwatch_api_key=os.getenv("LANGWATCH_KEY") or os.getenv("LANGWATCH_API_KEY"),
             langwatch_endpoint=os.getenv("LANGWATCH_ENDPOINT"),

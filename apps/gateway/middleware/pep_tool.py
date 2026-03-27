@@ -26,7 +26,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 try:
@@ -53,6 +53,19 @@ def validate(instance, schema):  # type: ignore[misc]
 
 
 logger = logging.getLogger(__name__)
+
+UnknownCapabilityMode = Literal[
+    "strict_block",
+    "require_approval",
+    "sandbox_allow",
+    "discover_only",
+]
+_UNKNOWN_CAPABILITY_MODES: tuple[UnknownCapabilityMode, ...] = (
+    "strict_block",
+    "require_approval",
+    "sandbox_allow",
+    "discover_only",
+)
 
 
 class PolicyValidationError(ValueError):
@@ -534,6 +547,7 @@ class ContractValidator:
         tool_permissions_path: str | Path,
         schemas_dir: str | Path,
         *,
+        unknown_capability_mode: UnknownCapabilityMode = "require_approval",
         security_observer: SecurityEventObserver | None = None,
         langwatch_enabled: bool = True,
         langwatch_client: Any | None = None,
@@ -542,8 +556,15 @@ class ContractValidator:
         langwatch_project: str | None = None,
         langwatch_debug: bool = False,
     ) -> None:
+        if unknown_capability_mode not in _UNKNOWN_CAPABILITY_MODES:
+            expected = ", ".join(_UNKNOWN_CAPABILITY_MODES)
+            raise ValueError(
+                "unknown_capability_mode must be one of "
+                f"{expected}; got {unknown_capability_mode!r}."
+            )
         self._permissions_path = Path(tool_permissions_path)
         self._schemas_dir = Path(schemas_dir)
+        self._unknown_capability_mode = unknown_capability_mode
         self._raw_policy: dict[str, Any] = {}
         self._capability_permissions: dict[str, Any] = {}
         self._tool_permissions: dict[str, Any] = {}
@@ -1385,6 +1406,78 @@ class ContractValidator:
             sanitized_args=copy.deepcopy(args),
         )
 
+    def _handle_unknown_capability(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        approval_token: str | None = None,
+    ) -> ContractResult:
+        mode = self._unknown_capability_mode
+        if mode == "strict_block":
+            logger.warning(
+                "Capability '%s' is not registered; blocking execution in strict mode.",
+                tool_name,
+            )
+            return ContractResult(
+                decision=ContractDecision.BLOCK,
+                tool_name=tool_name,
+                reason_code="UNKNOWN_CAPABILITY_BLOCKED",
+                details=(
+                    f"Capability '{tool_name}' is not registered and strict mode blocks execution."
+                ),
+                violations=["I1"],
+            )
+
+        if mode == "sandbox_allow":
+            logger.warning(
+                "Capability '%s' is not registered; allowing execution in sandbox_allow mode.",
+                tool_name,
+            )
+            return self._allow_result(
+                tool_name,
+                args,
+                reason_code="UNKNOWN_CAPABILITY_SANDBOX_ALLOWED",
+                details=(
+                    f"Capability '{tool_name}' is not registered but sandbox_allow mode permits it."
+                ),
+            )
+
+        if mode == "discover_only":
+            logger.info(
+                "Capability '%s' is not registered; allowing execution in discover_only mode.",
+                tool_name,
+            )
+            return self._allow_result(
+                tool_name,
+                args,
+                reason_code="UNKNOWN_CAPABILITY_DISCOVERED",
+                details=(
+                    f"Capability '{tool_name}' is not registered but discover_only mode permits it."
+                ),
+            )
+
+        logger.warning(
+            "Capability '%s' is not registered; approval required before execution.",
+            tool_name,
+        )
+        unregistered_approval = self._issue_or_validate_approval(
+            component_type=ComponentType.TOOL.value,
+            component_name=tool_name,
+            args=args,
+            approval_token=approval_token,
+            approval_required=True,
+            details=f"Capability '{tool_name}' is not registered and requires human approval.",
+        )
+        if unregistered_approval is not None:
+            return unregistered_approval
+        return self._allow_result(
+            tool_name,
+            args,
+            reason_code="UNREGISTERED_TOOL_APPROVED",
+            details=f"Capability '{tool_name}' was not registered but was explicitly approved.",
+        )
+
     def validate_call(
         self,
         tool_name: str,
@@ -1400,41 +1493,14 @@ class ContractValidator:
         self._maybe_reload()
 
         if tool_name not in self._capability_permissions:
-            logger.warning(
-                "Capability '%s' is not registered; approval required before execution.",
-                tool_name,
-            )
-            unregistered_approval = self._issue_or_validate_approval(
-                component_type=ComponentType.TOOL.value,
-                component_name=tool_name,
-                args=args,
-                approval_token=approval_token,
-                approval_required=True,
-                details=(
-                    f"Capability '{tool_name}' is not registered and requires human approval."
-                ),
-            )
-            if unregistered_approval is not None:
-                return self._finalize_result(
-                    component_type=ComponentType.TOOL.value,
-                    component_name=tool_name,
-                    args=args,
-                    result=unregistered_approval,
-                    agent_id=agent_id,
-                    framework=framework,
-                    invocation_context=invocation_context,
-                )
             return self._finalize_result(
                 component_type=ComponentType.TOOL.value,
                 component_name=tool_name,
                 args=args,
-                result=self._allow_result(
+                result=self._handle_unknown_capability(
                     tool_name,
                     args,
-                    reason_code="UNREGISTERED_TOOL_APPROVED",
-                    details=(
-                        f"Capability '{tool_name}' was not registered but was explicitly approved."
-                    ),
+                    approval_token=approval_token,
                 ),
                 agent_id=agent_id,
                 framework=framework,

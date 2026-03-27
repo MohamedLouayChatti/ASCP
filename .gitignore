@@ -5,3 +5,6 @@
 *.log
 *.env
 .coverage
+*.zip
+notes.md
+.pytest*

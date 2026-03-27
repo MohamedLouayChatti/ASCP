@@ -56,6 +56,12 @@ class ASCPSettings(BaseSettings):
 
     # Approval workflow
     approval_required_default: bool = True
+    unknown_capability_mode: Literal[
+        "strict_block",
+        "require_approval",
+        "sandbox_allow",
+        "discover_only",
+    ] = "require_approval"
 
     # LangWatch
     langwatch_enabled: bool = True
