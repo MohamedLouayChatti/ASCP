@@ -1,129 +1,186 @@
 # ASCP DLP Default Policy Configuration
-# 
+#
 # This file defines the default Data Leakage Prevention policies for the ASCP system.
-# Copy and modify this file to customize detection rules and enforcement actions for your deployment.
-# 
-# If no custom policy file is provided, the DLP system will automatically use these defaults.
-# To customize, pass your own policy file to dlp.init(Path("path/to/policy.yaml"))
+# Copy and modify this file to customise detection rules and enforcement actions for your deployment.
+#
+# If no custom policy file is provided, the DLP system will automatically use built-in defaults.
+# To customise, pass your own policy file to dlp.init(Path("path/to/policy.yaml"))
 
 dlp:
+  # ---------------------------------------------------------------------------
   # Canary Configuration
   # Canaries are injected tokens used to detect unauthorized information extraction.
   # If a canary token appears in system output, it indicates a potential data leak.
-  
+  # ---------------------------------------------------------------------------
+
   canary_action: BLOCK
     # Enforcement action when a canary token is detected.
     # Options: ALLOW, REDACT, ESCALATE, BLOCK
     # Recommended: BLOCK (canary leaks indicate serious security violations)
-  
+
+  # SECURITY CRITICAL: Change this value before deploying to production.
+  # The default value below is public knowledge — tokens derived from it are
+  # trivially predictable by anyone with access to this repository.
+  # Generate a secure value with:
+  #   python -c "import secrets; print(secrets.token_hex(32))"
+  # All DLP instances in a deployment must share the same salt.
   canary_salt: "default_insecure_salt_replace_in_prod"
-    # Salt used for deterministic canary token generation.
-    # CRITICAL: Change this value in production to a cryptographically random string.
-    # All instances of the DLP system should use the same salt to maintain consistency.
-    # Example: Use output of: python -c "import secrets; print(secrets.token_hex(32))"
-  
+
   canary_labels:
     # Labels for different types of canary tokens.
     # Each label generates a unique deterministic token for tracking different leak types.
     - api_credential_mock      # Simulates API credentials (e.g., external service tokens)
     - db_password              # Simulates database credentials
     - sys_admin_token          # Simulates system administration tokens
-  
-  
+
+  # ---------------------------------------------------------------------------
+  # Document Content Keys
+  # When injecting a canary token into a retrieved document, the engine searches
+  # for these keys in order and writes to the first one found. Add any keys your
+  # document schema uses (e.g. LangChain's "page_content") to ensure the canary
+  # is visible to the model.
+  # ---------------------------------------------------------------------------
+
+  content_keys:
+    - text
+    - content
+    - body
+    - page_content
+    - chunk
+
+
+  # ---------------------------------------------------------------------------
   # Secret Detection Configuration
   # Patterns for detecting high-sensitivity credentials and API keys.
-  # Secrets are typically treated as critical violations.
-  
+  # ---------------------------------------------------------------------------
+
   secrets_action: BLOCK
     # Enforcement action when a secret is detected.
     # Options: ALLOW, REDACT, ESCALATE, BLOCK
     # Recommended: BLOCK (secrets should never be leaked)
-  
+
   secret_patterns:
     - name: openai_key
       regex: "sk-[A-Za-z0-9]{48}"
-        # OpenAI API keys (production: sk-proj-...)
+        # OpenAI API keys
         # Format: sk- followed by 48 alphanumeric characters
-    
+
     - name: aws_access_key
       regex: "AKIA[0-9A-Z]{16}"
         # AWS Access Key IDs
         # Format: AKIA followed by 16 uppercase alphanumeric characters
-    
+
     - name: github_token
       regex: "ghp_[A-Za-z0-9]{36}"
         # GitHub Personal Access Tokens
         # Format: ghp_ followed by 36 alphanumeric characters
-  
-  
+
+
+  # ---------------------------------------------------------------------------
   # PII Detection Configuration
   # These patterns detect Personally Identifiable Information.
-  # PII is typically redacted rather than blocked to allow sanitized output.
-  
+  # PII is typically redacted rather than blocked to allow sanitised output.
+  # ---------------------------------------------------------------------------
+
   pii_action: REDACT
     # Enforcement action when PII is detected.
     # Options: ALLOW, REDACT, ESCALATE, BLOCK
-    # Recommended: REDACT (allows systems to operate while sanitizing sensitive data)
-  
+    # Recommended: REDACT (allows systems to operate while sanitising sensitive data)
+
   pii_patterns:
     - name: email
       regex: "[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]*[a-zA-Z0-9-]"
         # Email addresses (RFC 5322 simplified)
-        # Matches patterns like: user@example.com, first.last+tag@sub.domain.co.uk
-    
+
     - name: ipv4
       regex: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"
         # IPv4 addresses
-        # Matches patterns like: 192.168.1.1, 10.0.0.1
-  
-  
-  # Named Entity Recognition (NER) Configuration
-  # Enable spaCy-based Named Entity Recognition for advanced PII detection.
+
+
+  # ---------------------------------------------------------------------------
+  # Named Entity Recognition (NER)
+  # Enable spaCy-based NER for advanced PII detection.
   # Requires: pip install spacy && python -m spacy download en_core_web_sm
-  # When enabled, detects PERSON, ORG, GPE, LOC, DATE entities in addition to regex patterns.
-  
+  # ---------------------------------------------------------------------------
+
   enable_ner: false
     # Set to true to enable spaCy-based Named Entity Recognition.
-    # When enabled, the system will detect named entities beyond regex patterns.
-    # Note: NER adds latency; enable only if needed for your use case.
-    # Detected entities: PERSON, ORG (organization), GPE (geopolitical), LOC (location), DATE, EMAIL, PHONE
-    # 
-    # Recommended for production deployments that prioritize comprehensive PII detection.
-    # Keep disabled in environments where model loading overhead is undesirable.
+    # Detected entity types: PERSON, ORG, GPE, LOC, DATE, EMAIL, PHONE
+    # Note: NER adds latency — enable only when comprehensive PII detection is required.
 
 
-# ============================================================================
-# CUSTOMIZATION GUIDE FOR DEVELOPERS
-# ============================================================================
+  # ---------------------------------------------------------------------------
+  # Per-Surface Enforcement Overrides  (policy-as-code)
+  #
+  # Override the global action for specific violation categories on a given
+  # scanning surface. This allows fine-grained control without changing source code.
+  #
+  # Surface keys (lower-snake-case):
+  #   output       — LLM-generated text
+  #   tool_args    — Tool arguments before execution
+  #   tool_result  — Data returned from tools
+  #
+  # Supported inner keys per surface:
+  #   secrets_action                : DLPAction name applied when secrets are found
+  #   pii_action                    : DLPAction name applied when PII is found
+  #   canary_action                 : DLPAction name applied when canary hits are found
+  #   downgrade_escalate_to_redact  : "true" | "false"
+  #       When true, a final ESCALATE is downgraded to REDACT if the only
+  #       violations are PII (no canary, no secret). Useful on TOOL_RESULT
+  #       where human review for low-severity PII findings is undesirable.
+  #
+  # Action overrides only escalate — they cannot silently downgrade a BLOCK.
+  # Omit a surface entry to inherit global action defaults for that surface.
+  # ---------------------------------------------------------------------------
+
+  surface_overrides:
+    tool_args:
+      # Secrets in tool arguments are always blocked, even if the global
+      # secrets_action is set to ALLOW or REDACT. Prevent credentials from
+      # flowing into external tools regardless of operator policy.
+      secrets_action: block
+
+    tool_result:
+      # On tool results, downgrade pure-PII escalations to REDACT.
+      # Canary leaks and secrets are still escalated/blocked.
+      downgrade_escalate_to_redact: "true"
+
+
+# ==============================================================================
+# CUSTOMISATION GUIDE FOR DEVELOPERS
+# ==============================================================================
 #
 # 1. CHANGING ENFORCEMENT ACTIONS
-#    - ALLOW: No action taken, content passes through unchanged
-#    - REDACT: Matching content is replaced with [REDACTED_category_type]
-#    - ESCALATE: Violation is logged and flagged for human review
-#    - BLOCK: Request is rejected with a safe message
+#    - ALLOW:   No action; content passes through unchanged
+#    - REDACT:  Matching content replaced with [REDACTED_category_type]
+#    - ESCALATE: Violation logged and flagged for human review
+#    - BLOCK:   Request rejected with a safe message
 #
 # 2. ADDING NEW SECRET PATTERNS
-#    Add entries to secret_patterns with custom regex patterns.
-#    Example:
 #      - name: my_custom_token
 #        regex: "MYPREFIX-[A-Za-z0-9]{20}"
 #
 # 3. ADDING NEW PII PATTERNS
-#    Add entries to pii_patterns with custom regex patterns.
-#    Example:
 #      - name: ssn
 #        regex: "\\d{3}-\\d{2}-\\d{4}"
 #
-# 4. PER-SURFACE OVERRIDES (advanced)
-#    The DLPConfig can be extended with per-surface enforcement rules.
-#    Currently, TOOL_ARGS always receives BLOCK on secrets (automatic override).
+# 4. PER-SURFACE OVERRIDES
+#    Use the surface_overrides block above. Each surface can independently
+#    configure action overrides and the escalation downgrade flag.
+#    Example: make the output surface also downgrade PII escalations:
 #
-# 5. PRODUCTION DEPLOYMENT
-#    Before deploying to production:
-#    - Replace canary_salt with a secure random value
-#    - Review all regex patterns for false positives
-#    - Set enable_ner=true if comprehensive PII detection is needed
-#    - Configure secret_patterns to match your organization's token formats
-#    - Test with representative data to verify redaction behavior
+#    surface_overrides:
+#      output:
+#        downgrade_escalate_to_redact: "true"
+#      tool_args:
+#        secrets_action: block
+#        pii_action: redact
 #
-# ============================================================================
+# 5. PRODUCTION DEPLOYMENT CHECKLIST
+#    [ ] Replace canary_salt with output of: python -c "import secrets; print(secrets.token_hex(32))"
+#    [ ] Review all regex patterns for false positives in your domain
+#    [ ] Set enable_ner: true if comprehensive PII detection is required
+#    [ ] Add your document schema keys to content_keys
+#    [ ] Test with representative data to verify redaction behaviour
+#
+# ==============================================================================

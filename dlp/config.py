@@ -12,6 +12,18 @@ class PatternDef:
     regex: str
 
 
+_DEFAULT_SURFACE_OVERRIDES: dict[str, dict[str, str]] = {
+    # On TOOL_ARGS, secrets always escalate to BLOCK regardless of global secrets_action.
+    "tool_args": {"secrets_action": "block"},
+    # On TOOL_RESULT, downgrade a pure-PII ESCALATE to REDACT (no canary/secret involved).
+    "tool_result": {"downgrade_escalate_to_redact": "true"},
+}
+
+_DEFAULT_CONTENT_KEYS: list[str] = ["text", "content", "body", "page_content", "chunk"]
+
+_DEFAULT_SALT = "default_insecure_salt_replace_in_prod"
+
+
 @dataclass
 class DLPConfig:
     canary_action: DLPAction
@@ -21,14 +33,24 @@ class DLPConfig:
     enable_ner: bool
     secret_patterns: list[PatternDef] = field(default_factory=list)
     pii_patterns: list[PatternDef] = field(default_factory=list)
-    canary_labels: list[str] = field(default_factory=lambda: ["api_credential_mock", "db_password", "sys_admin_token"])
+    canary_labels: list[str] = field(
+        default_factory=lambda: ["api_credential_mock", "db_password", "sys_admin_token"]
+    )
+    # Ordered list of document keys tried when injecting canaries.
+    # Falls back to "_canary" only if none of these keys are present.
+    content_keys: list[str] = field(default_factory=lambda: list(_DEFAULT_CONTENT_KEYS))
+    # Per-surface enforcement overrides. Keys are surface names in lower-snake-case
+    # ("output", "tool_args", "tool_result"). Supported inner keys:
+    #   secrets_action / pii_action / canary_action  : DLPAction name string (e.g. "block")
+    #   downgrade_escalate_to_redact                 : "true" | "false"
+    surface_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
 
     @classmethod
     def defaults(cls) -> "DLPConfig":
         """Safe defaults for when a policy file is not provided (e.g., in tests)."""
         return cls(
             canary_action=DLPAction.BLOCK,
-            canary_salt="default_insecure_salt_replace_in_prod",
+            canary_salt=_DEFAULT_SALT,
             secrets_action=DLPAction.BLOCK,
             pii_action=DLPAction.REDACT,
             enable_ner=False,
@@ -41,7 +63,9 @@ class DLPConfig:
                 PatternDef(name="email", regex=r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]*[a-zA-Z0-9-]"),
                 PatternDef(name="ipv4", regex=r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
             ],
-            canary_labels=["api_credential_mock", "db_password", "sys_admin_token"]
+            canary_labels=["api_credential_mock", "db_password", "sys_admin_token"],
+            content_keys=list(_DEFAULT_CONTENT_KEYS),
+            surface_overrides=dict(_DEFAULT_SURFACE_OVERRIDES),
         )
 
 
@@ -79,22 +103,48 @@ def load_dlp_config(policy_path: Path) -> DLPConfig:
         PatternDef(name=p.get("name", "unknown"), regex=p.get("regex", ""))
         for p in dlp_data.get("secret_patterns", [])
     ]
-    
+
     pii_patterns = [
         PatternDef(name=p.get("name", "unknown"), regex=p.get("regex", ""))
         for p in dlp_data.get("pii_patterns", [])
     ]
 
     if not secret_patterns and not pii_patterns:
-        logging.critical("Both secret_patterns and pii_patterns are empty in the DLP config. The scanner will not catch any regex-based violations.")
+        logging.critical(
+            "Both secret_patterns and pii_patterns are empty in the DLP config. "
+            "The scanner will not catch any regex-based violations."
+        )
+
+    canary_salt = dlp_data.get("canary_salt", _DEFAULT_SALT)
+    if canary_salt in (_DEFAULT_SALT, "changeme"):
+        logging.warning(
+            "SECURITY: canary_salt is set to the default insecure value '%s'. "
+            "Replace it with a cryptographically random string before deploying to production. "
+            "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\"",
+            canary_salt,
+        )
+
+    # Parse surface_overrides. Missing entries fall back to the module defaults so that
+    # operators only need to specify what they want to change.
+    raw_overrides = dlp_data.get("surface_overrides", {})
+    surface_overrides: dict[str, dict[str, str]] = dict(_DEFAULT_SURFACE_OVERRIDES)
+    for surface_name, overrides in raw_overrides.items():
+        if overrides:
+            surface_overrides[surface_name.lower()] = {
+                k: str(v) for k, v in overrides.items()
+            }
 
     return DLPConfig(
         canary_action=_parse_action(dlp_data.get("canary_action", "BLOCK")),
-        canary_salt=dlp_data.get("canary_salt", "default_insecure_salt_replace_in_prod"),
+        canary_salt=canary_salt,
         secrets_action=_parse_action(dlp_data.get("secrets_action", "BLOCK")),
         pii_action=_parse_action(dlp_data.get("pii_action", "REDACT")),
         enable_ner=dlp_data.get("enable_ner", False),
         secret_patterns=secret_patterns,
         pii_patterns=pii_patterns,
-        canary_labels=dlp_data.get("canary_labels", ["api_credential_mock", "db_password", "sys_admin_token"])
+        canary_labels=dlp_data.get(
+            "canary_labels", ["api_credential_mock", "db_password", "sys_admin_token"]
+        ),
+        content_keys=dlp_data.get("content_keys", list(_DEFAULT_CONTENT_KEYS)),
+        surface_overrides=surface_overrides,
     )

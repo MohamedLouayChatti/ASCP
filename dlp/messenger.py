@@ -1,4 +1,3 @@
-from typing import List
 from .models import DLPResult, ScanSurface, DLPAction
 
 _MESSAGES = {
@@ -9,14 +8,15 @@ _MESSAGES = {
     "default": "I cannot complete this request due to a policy constraint.",
 }
 
+
 class SafeMessenger:
     def get_message(self, result: DLPResult) -> str:
         """
         Determines the appropriate safe message without leaking any matched values.
-        Different surfaces might yield different formats.
+        Different surfaces yield different message formats.
         """
         if result.surface in (ScanSurface.TOOL_ARGS, ScanSurface.TOOL_RESULT):
-            # No user-facing text to soften here, just return a structured reason
+            # No user-facing text to soften here; return a structured reason code.
             if result.action == DLPAction.ESCALATE:
                 return "TOOL_ESCALATED_POLICY_VIOLATION"
             if result.canary_hits:
@@ -32,11 +32,11 @@ class SafeMessenger:
             return _MESSAGES["escalate"]
         if result.canary_hits:
             return _MESSAGES["canary"]
-        
+
         if result.secret_matches:
             return _MESSAGES["secret"]
-            
+
         if result.pii_matches:
             return _MESSAGES["pii"]
-            
+
         return _MESSAGES["default"]

@@ -1,29 +1,67 @@
-from typing import List, Dict, Any, Optional
-
+from .config import DLPConfig, _parse_action
 from .models import DLPResult, DLPAction, ScanSurface, EnforcementDecision
 from .messenger import SafeMessenger
 
+
 class PolicyEnforcer:
-    def __init__(self):
+    def __init__(self, config: DLPConfig):
+        self.config = config
         self.messenger = SafeMessenger()
 
     def enforce(self, result: DLPResult) -> EnforcementDecision:
         """
-        Takes the raw scanner result and applies per-surface policy overrides.
-        Generates final decision and safe messages if necessary.
+        Takes the raw scanner result and applies per-surface policy overrides
+        loaded from DLPConfig.surface_overrides. All enforcement decisions are
+        driven by YAML configuration — there is no hardcoded business logic here.
+
+        surface_overrides is keyed by the surface name in lower-snake-case
+        ("output", "tool_args", "tool_result"). Supported per-surface keys:
+
+          secrets_action                 – override action when secrets are found
+          pii_action                     – override action when PII is found
+          canary_action                  – override action when canary hits are found
+          downgrade_escalate_to_redact   – "true" | "false":
+              When true, a final ESCALATE action is downgraded to REDACT if
+              the only violations are PII  (no canary hits, no secret matches).
+              This allows tool results with PII-only violations to be sanitised
+              rather than sent for human review.
         """
         final_action = result.action
-        
-        # Example per-surface overrides
-        if result.surface == ScanSurface.TOOL_ARGS:
-            # On tool arguments, any secret match escalates/blocks regardless of global action
-            if result.secret_matches:
-                final_action = max(final_action, DLPAction.BLOCK)
-        
-        if result.surface == ScanSurface.TOOL_RESULT:
-            # On tool results, we might only want to redact PII, even if policy says Escalate
-            if final_action == DLPAction.ESCALATE and not result.canary_hits and not result.secret_matches:
-                final_action = DLPAction.REDACT
+
+        # Resolve the surface key used in the config ("tool_args", "tool_result", etc.)
+        surface_key = result.surface.value.lower()
+        surface_cfg = self.config.surface_overrides.get(surface_key, {})
+
+        # Apply per-category action overrides for this surface.
+        # We take the max (most severe) of the current action and the override,
+        # so overrides can only escalate — never silently downgrade a BLOCK.
+        if result.secret_matches:
+            override = surface_cfg.get("secrets_action")
+            if override:
+                final_action = max(final_action, _parse_action(override))
+
+        if result.pii_matches:
+            override = surface_cfg.get("pii_action")
+            if override:
+                final_action = max(final_action, _parse_action(override))
+
+        if result.canary_hits:
+            override = surface_cfg.get("canary_action")
+            if override:
+                final_action = max(final_action, _parse_action(override))
+
+        # Conditional downgrade: if configured for this surface, downgrade
+        # ESCALATE → REDACT when the only violations are PII (no canary, no secret).
+        # This preserves the ability to sanitise content while bypassing a heavy
+        # review queue for low-severity, PII-only findings.
+        downgrade = surface_cfg.get("downgrade_escalate_to_redact", "false").lower() == "true"
+        if (
+            downgrade
+            and final_action == DLPAction.ESCALATE
+            and not result.canary_hits
+            and not result.secret_matches
+        ):
+            final_action = DLPAction.REDACT
 
         should_block = (final_action == DLPAction.BLOCK)
         should_escalate = (final_action == DLPAction.ESCALATE)
@@ -31,19 +69,18 @@ class PolicyEnforcer:
         # Safe messaging
         safe_message = None
         clean_text = result.clean_text
-        
+
         if should_block:
-            # Replaces clean_text entirely with the safe message or just sets safe_message
             safe_message = self.messenger.get_message(result)
             clean_text = safe_message
-        
+
         escalation_event = None
         if should_escalate:
             escalation_event = {
                 "surface": result.surface.value,
                 "violations": result.violations,
                 "action_taken": final_action.name,
-                "requires_review": True
+                "requires_review": True,
             }
 
         return EnforcementDecision(
@@ -54,5 +91,5 @@ class PolicyEnforcer:
             should_escalate=should_escalate,
             safe_message=safe_message,
             escalation_event=escalation_event,
-            dlp_result=result
+            dlp_result=result,
         )

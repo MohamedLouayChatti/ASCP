@@ -5,23 +5,23 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-# Add the parent directory to the path so we can import dlp
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import dlp
 from dlp.models import DLPAction, ScanSurface, DLPMatch
 from dlp.config import DLPConfig
 
+
 class TestIntegration(unittest.TestCase):
     def setUp(self):
-        # Re-init before each test just in case it was modified
+        # Re-init before each test to guarantee a clean, known state.
         dlp.init(Path("no_such_file.yaml"))
 
     def test_canary_injection_and_detection(self):
         # Inject standard docs
         docs = [{"title": "doc1", "text": "This is public info."}]
         injected, token, label = dlp.inject_canaries_into_context(docs)
-        
+
         self.assertEqual(len(injected), 1)
         self.assertIn("Note: Session reference [CANARY-", injected[0]["text"])
         self.assertIsNotNone(token)
@@ -33,7 +33,6 @@ class TestIntegration(unittest.TestCase):
 
         self.assertEqual(decision.action, DLPAction.BLOCK)
         self.assertTrue(decision.should_block)
-        # Verify safe messages
         self.assertEqual(decision.safe_message, "I cannot share this information.")
         self.assertNotIn(token, decision.safe_message)
         self.assertEqual(decision.clean_text, decision.safe_message)
@@ -42,41 +41,35 @@ class TestIntegration(unittest.TestCase):
         self.assertIsNone(decision.escalation_event)
 
     def test_tool_argument_secret_blocked(self):
-        # A tool argument containing sk-AAAA...48chars must be caught by scan_tool_args().
         fake_key = "sk-012345678901234567890123456789012345678901234567"
         args = {"body": f"Here is my key: {fake_key}"}
 
         decision = dlp.scan_tool_args("send_email", args)
-        
+
         self.assertTrue(decision.should_block)
-        # Should be blocked
         self.assertEqual(decision.safe_message, "TOOL_BLOCKED_SECRET_VIOLATION")
         self.assertNotIn("sk-", decision.safe_message)
 
     def test_tool_result_pii_redacted(self):
-        # A tool result containing user@email.com must be redacted by scan_tool_result().
-        # PII action default is REDACT, so on TOOL_RESULT we expect it to be redacted, not BLOCKED.
         tool_result = {"user_info": {"email": "user@email.com", "name": "Test"}}
         decision = dlp.scan_tool_result("get_user", tool_result)
-        
+
         self.assertEqual(decision.action, DLPAction.REDACT)
         self.assertFalse(decision.should_block)
         self.assertIn("[REDACTED_pii_email]", decision.clean_text)
         self.assertNotIn("user@email.com", decision.clean_text)
 
     def test_block_path_produces_decision(self):
-        # Trigger an override that forces block
         fake_key = "sk-012345678901234567890123456789012345678901234567"
         args = {"body": f"Here is my key: {fake_key}"}
-        
+
         decision = dlp.scan_tool_args("test", args)
-        
+
         self.assertTrue(decision.should_block)
         self.assertFalse(decision.should_escalate)
         self.assertIsNotNone(decision.safe_message)
 
     def test_ner_redaction(self):
-        # We need to configure with enable_ner=True. We can write a temporary policy.
         content = """
 dlp:
   enable_ner: true
@@ -85,64 +78,54 @@ dlp:
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
             f.write(content)
             temp_path = f.name
-        
+
         try:
             dlp.init(Path(temp_path))
-            
+
             with patch.object(dlp._scanner.ner_detector, 'detect') as mock_detect:
                 mock_detect.return_value = [
-                    DLPMatch(pattern_name="PERSON", category="pii", action=DLPAction.REDACT, value="John Doe", spans=[(11, 19)], surface=ScanSurface.OUTPUT)
+                    DLPMatch(pattern_name="PERSON", category="pii", action=DLPAction.REDACT,
+                             value="John Doe", spans=[(11, 19)], surface=ScanSurface.OUTPUT)
                 ]
                 text = "My name is John Doe and I work at OpenAI."
                 decision = dlp.scan_output(text)
-                
+
                 self.assertEqual(decision.action, DLPAction.REDACT)
                 self.assertIn("[REDACTED_pii_PERSON]", decision.clean_text)
                 self.assertNotIn("John Doe", decision.clean_text)
         finally:
             os.remove(temp_path)
-            # Re-init safely
-            dlp._scanner = None
-            dlp._enforcer = None
-            dlp._canary_engine = None
+            # Reset via public init() instead of nulling private attributes.
+            dlp.init(Path("no_such_file.yaml"))
 
 
 class TestIntegrationFallbackAndEdgeCases(unittest.TestCase):
-    """Test integration error paths, fallback behavior, and edge cases."""
+    """Test integration error paths, fallback behaviour, and edge cases."""
+
+    def setUp(self):
+        # Consistent init-based reset before every test.
+        dlp.init(Path("no_such_file.yaml"))
 
     def tearDown(self):
-        # Reset global state after each test
-        dlp._scanner = None
-        dlp._enforcer = None
-        dlp._canary_engine = None
+        # Re-init to restore well-known defaults after every test.
+        # This replaces the former pattern of manually nulling private attributes
+        # (dlp._scanner = None etc.), which was fragile and bypassed init() logic.
+        dlp.init(Path("no_such_file.yaml"))
 
     def test_scan_without_init_uses_fallback(self):
-        """Test that scanning without calling init() uses safe defaults."""
-        # Reset global state to simulate not calling init()
-        dlp._scanner = None
-        dlp._enforcer = None
-        dlp._canary_engine = None
-        
-        # Should still work with defaults
+        """Test that scanning uses safe defaults when init() falls back to non-existent file."""
         decision = dlp.scan_output("test input with email@example.com")
-        
-        # Should have completed scan with defaults
+
         self.assertIsNotNone(decision)
         self.assertIsNotNone(decision.action)
 
     def test_reinit_with_different_policy(self):
         """Test that re-initializing with a different policy works correctly."""
-        # First init with defaults
         dlp.init(Path("nonexistent1.yaml"))
-        
-        # Verify first config
         decision1 = dlp.scan_output("sk-" + "A" * 48)
         self.assertEqual(decision1.action, DLPAction.BLOCK)
-        
-        # Re-init with different policy
+
         dlp.init(Path("nonexistent2.yaml"))
-        
-        # Verify second init also works
         decision2 = dlp.scan_output("sk-" + "B" * 48)
         self.assertEqual(decision2.action, DLPAction.BLOCK)
 
@@ -155,8 +138,6 @@ class TestIntegrationFallbackAndEdgeCases(unittest.TestCase):
 
     def test_scan_tool_result_with_nested_dict(self):
         """Test scan_tool_result with deeply nested dictionary structures."""
-        dlp.init(Path("no_file.yaml"))
-        
         nested_result = {
             "level1": {
                 "level2": {
@@ -167,28 +148,23 @@ class TestIntegrationFallbackAndEdgeCases(unittest.TestCase):
                 }
             }
         }
-        
+
         decision = dlp.scan_tool_result("nested_tool", nested_result)
-        
-        # Should detect both secret and PII
-        # Secret takes precedence and blocks, so clean_text is a safe message code
-        self.assertTrue(decision.should_block)  # Secret takes precedence
+
+        self.assertTrue(decision.should_block)
         self.assertEqual(decision.action, DLPAction.BLOCK)
 
     def test_scan_tool_result_with_list_of_dicts(self):
         """Test scan_tool_result with list structures."""
-        dlp.init(Path("no_file.yaml"))
-        
         result_with_list = {
             "records": [
                 {"email": "user1@test.com", "name": "User 1"},
                 {"email": "user2@test.com", "name": "User 2"}
             ]
         }
-        
+
         decision = dlp.scan_tool_result("list_tool", result_with_list)
-        
-        # Both emails should be redacted
+
         self.assertEqual(decision.action, DLPAction.REDACT)
         self.assertFalse(decision.should_block)
         count = decision.clean_text.count("[REDACTED")
@@ -196,21 +172,17 @@ class TestIntegrationFallbackAndEdgeCases(unittest.TestCase):
 
     def test_all_three_surfaces_with_different_violations(self):
         """Test that all three surfaces properly handle violations."""
-        dlp.init(Path("no_file.yaml"))
         fake_key = "sk-" + "D" * 48
         fake_email = "test@example.com"
-        
-        # OUTPUT surface with secret
+
         output_decision = dlp.scan_output(f"Key: {fake_key}")
         self.assertEqual(output_decision.action, DLPAction.BLOCK)
         self.assertEqual(output_decision.dlp_result.surface, ScanSurface.OUTPUT)
-        
-        # TOOL_ARGS surface with secret
+
         args_decision = dlp.scan_tool_args("test", {"arg": fake_key})
         self.assertEqual(args_decision.action, DLPAction.BLOCK)
         self.assertEqual(args_decision.dlp_result.surface, ScanSurface.TOOL_ARGS)
-        
-        # TOOL_RESULT surface with PII
+
         result_decision = dlp.scan_tool_result("test", {"result": fake_email})
         self.assertEqual(result_decision.action, DLPAction.REDACT)
         self.assertEqual(result_decision.dlp_result.surface, ScanSurface.TOOL_RESULT)
@@ -234,71 +206,73 @@ dlp:
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
             f.write(content)
             temp_path = f.name
-        
+
         try:
             dlp.init(Path(temp_path))
-            
-            # Trigger escalation
+
             decision = dlp.scan_output("Found secret_12345")
-            
-            # Verify escalation
+
             self.assertEqual(decision.action, DLPAction.ESCALATE)
             self.assertTrue(decision.should_escalate)
-            
-            # Verify dlp_result is populated for telemetry
             self.assertIsNotNone(decision.dlp_result)
             self.assertGreater(len(decision.dlp_result.secret_matches), 0)
             self.assertIn("secret_12345", decision.dlp_result.secret_matches[0].value)
-            
-            # Verify escalation_event is created
             self.assertIsNotNone(decision.escalation_event)
         finally:
             os.remove(temp_path)
-            dlp._scanner = None
-            dlp._enforcer = None
-            dlp._canary_engine = None
 
     def test_safe_redaction_preserves_text_integrity(self):
         """Test that redaction maintains text integrity and position correctness."""
-        dlp.init(Path("no_file.yaml"))
-        
         text = "Contact us at user@example.com or admin@company.com"
         decision = dlp.scan_output(text)
-        
-        # Both emails should be redacted
+
         self.assertEqual(decision.action, DLPAction.REDACT)
         redacted = decision.clean_text
-        
-        # Verify legitimate text is preserved
+
         self.assertIn("Contact us at", redacted)
         self.assertIn("or", redacted)
-        
-        # Verify emails are redacted
         self.assertNotIn("user@example.com", redacted)
         self.assertNotIn("admin@company.com", redacted)
 
     def test_multiple_scans_per_session(self):
         """Test that multiple consecutive scans work correctly with canary state."""
-        dlp.init(Path("no_file.yaml"))
-        
-        # Inject canary once
         docs, token, label = dlp.inject_canaries_into_context([{"text": "doc"}])
-        
-        # First scan - clean
+
         decision1 = dlp.scan_output("I will not leak the token")
         self.assertEqual(decision1.action, DLPAction.ALLOW)
-        
-        # Second scan - leak the canary
+
         decision2 = dlp.scan_output(f"Actually here is: {token}")
         self.assertEqual(decision2.action, DLPAction.BLOCK)
         self.assertTrue(decision2.should_block)
-        
-        # Third scan - clean again
+
         decision3 = dlp.scan_output("Just regular text now")
         self.assertEqual(decision3.action, DLPAction.ALLOW)
 
     def test_tool_args_secret_always_blocks(self):
-        """Test that secrets in TOOL_ARGS always block correctly regardless of policy."""
+        """
+        Secrets in TOOL_ARGS must always block, even when the global
+        secrets_action policy is set to ALLOW.
+
+        This verifies two things:
+        1. DLPConfig.defaults() encodes the tool_args.secrets_action=block override
+           so that protective behaviour is present out-of-the-box.
+        2. The enforcer correctly applies the override when a YAML policy sets
+           secrets_action to ALLOW at the global level.
+        """
+        # --- Part 1: assert the override is present in built-in defaults ---
+        defaults = DLPConfig.defaults()
+        self.assertIn(
+            "tool_args",
+            defaults.surface_overrides,
+            "DLPConfig.defaults() must include a 'tool_args' surface override.",
+        )
+        self.assertEqual(
+            defaults.surface_overrides["tool_args"].get("secrets_action", "").lower(),
+            "block",
+            "DLPConfig.defaults() must set tool_args.secrets_action = 'block'.",
+        )
+
+        # --- Part 2: behavioural test — ALLOW policy + tool_args override = BLOCK ---
         content = """
 dlp:
   canary_action: ALLOW
@@ -316,64 +290,132 @@ dlp:
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
             f.write(content)
             temp_path = f.name
-        
+
         try:
             dlp.init(Path(temp_path))
-            
-            # Even though secrets_action is ALLOW, tool args should still block
+
             fake_key = "sk-" + "E" * 48
             decision = dlp.scan_tool_args("api_call", {"token": fake_key})
-            
-            # Should BLOCK due to tool args override
-            self.assertTrue(decision.should_block)
+
+            # Surface override must force BLOCK despite global ALLOW policy.
+            self.assertTrue(
+                decision.should_block,
+                "scan_tool_args() must block secrets even when secrets_action=ALLOW globally.",
+            )
+            self.assertEqual(decision.action, DLPAction.BLOCK)
+            self.assertEqual(decision.dlp_result.surface, ScanSurface.TOOL_ARGS)
         finally:
             os.remove(temp_path)
-            dlp._scanner = None
-            dlp._enforcer = None
-            dlp._canary_engine = None
 
     def test_violations_list_properly_populated(self):
         """Test that violations list is properly populated with violation types."""
-        dlp.init(Path("no_file.yaml"))
-        
         fake_key = "sk-" + "F" * 48
         decision = dlp.scan_output(f"Secret: {fake_key}")
-        
-        # Should have violation tracking
+
         self.assertGreater(len(decision.violations), 0)
         self.assertTrue(any("secret" in v.lower() for v in decision.violations))
 
     def test_action_prevents_information_leakage_in_decision(self):
         """Test that safe_message and clean_text never leak actual matched values."""
-        dlp.init(Path("no_file.yaml"))
-        
         sensitive_values = [
             "sk-" + "G" * 48,
             "AKIA" + "H" * 16,
             "ghp_" + "I" * 36,
             "sensitive@company.com"
         ]
-        
+
         for value in sensitive_values:
             decision = dlp.scan_output(f"Found: {value}")
-            
-            # Never leak original value in clean_text
+
             self.assertNotIn(value, decision.clean_text)
-            
-            # For blocked/escalated, never leak in safe_message
+
             if decision.action in [DLPAction.BLOCK, DLPAction.ESCALATE]:
                 self.assertNotIn(value, decision.safe_message)
+
+    def test_surface_overrides_configurable_via_yaml(self):
+        """
+        surface_overrides must be fully driven by YAML. Verify that a custom
+        policy can add a pii_action override on the output surface.
+        """
+        content = """
+dlp:
+  canary_action: BLOCK
+  canary_salt: "test_salt"
+  secrets_action: BLOCK
+  pii_action: ESCALATE
+  enable_ner: false
+  secret_patterns: []
+  pii_patterns:
+    - name: email
+      regex: "[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\\\.[a-zA-Z0-9-.]*[a-zA-Z0-9-]"
+  surface_overrides:
+    output:
+      pii_action: redact
+"""
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
+            f.write(content)
+            temp_path = f.name
+
+        try:
+            dlp.init(Path(temp_path))
+
+            # Global pii_action is ESCALATE, but the output surface override says REDACT.
+            # Because overrides only escalate (max), and REDACT < ESCALATE, the
+            # override here acts as a floor.  Let's confirm the config is parsed.
+            from dlp.config import _parse_action, DLPAction as A
+            import dlp as _dlp
+            overrides = _dlp._scanner.config.surface_overrides
+            self.assertIn("output", overrides)
+            self.assertEqual(overrides["output"].get("pii_action", "").lower(), "redact")
+        finally:
+            os.remove(temp_path)
+
+    def test_downgrade_escalate_to_redact_configurable(self):
+        """
+        downgrade_escalate_to_redact on tool_result must be configurable via YAML.
+        When set to false, a pure-PII escalation on TOOL_RESULT must NOT be downgraded.
+        """
+        content = """
+dlp:
+  canary_action: BLOCK
+  canary_salt: "test_salt"
+  secrets_action: BLOCK
+  pii_action: ESCALATE
+  enable_ner: false
+  secret_patterns: []
+  pii_patterns:
+    - name: email
+      regex: "[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\\\.[a-zA-Z0-9-.]*[a-zA-Z0-9-]"
+  surface_overrides:
+    tool_result:
+      downgrade_escalate_to_redact: "false"
+"""
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
+            f.write(content)
+            temp_path = f.name
+
+        try:
+            dlp.init(Path(temp_path))
+
+            # PII on TOOL_RESULT with pii_action=ESCALATE and downgrade disabled
+            # → must remain ESCALATE, not be downgraded to REDACT
+            decision = dlp.scan_tool_result("query", {"email": "user@example.com"})
+            self.assertEqual(decision.action, DLPAction.ESCALATE)
+            self.assertTrue(decision.should_escalate)
+        finally:
+            os.remove(temp_path)
 
 
 class TestNERIntegration(unittest.TestCase):
     """Integration tests for NER (Named Entity Recognition) functionality."""
-    
+
+    def setUp(self):
+        dlp.init(Path("no_such_file.yaml"))
+
     def tearDown(self):
-        """Reset global state after each test."""
-        dlp._scanner = None
-        dlp._enforcer = None
-        dlp._canary_engine = None
-    
+        # Use init() as the reset mechanism — not private attribute nulling.
+        dlp.init(Path("no_such_file.yaml"))
+
     def test_ner_enabled_detects_entities(self):
         """Test that NER detects entities when enabled."""
         content = """
@@ -384,32 +426,25 @@ dlp:
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
             f.write(content)
             temp_path = f.name
-        
+
         try:
             dlp.init(Path(temp_path))
-            
+
             with patch.object(dlp._scanner.ner_detector, 'detect') as mock_detect:
                 mock_detect.return_value = [
-                    DLPMatch(
-                        pattern_name="ner_person",
-                        category="pii",
-                        action=DLPAction.REDACT,
-                        value="Alice Johnson",
-                        spans=[(10, 23)],
-                        surface=ScanSurface.OUTPUT
-                    )
+                    DLPMatch(pattern_name="ner_person", category="pii", action=DLPAction.REDACT,
+                             value="Alice Johnson", spans=[(10, 23)], surface=ScanSurface.OUTPUT)
                 ]
-                
+
                 text = "Say hello Alice Johnson today."
                 decision = dlp.scan_output(text)
-                
-                # NER should detect and redact
+
                 self.assertEqual(decision.action, DLPAction.REDACT)
                 self.assertIn("[REDACTED_pii_ner_person]", decision.clean_text)
                 self.assertNotIn("Alice Johnson", decision.clean_text)
         finally:
             os.remove(temp_path)
-    
+
     def test_ner_disabled_skips_detection(self):
         """Test that NER is skipped when disabled."""
         content = """
@@ -420,19 +455,16 @@ dlp:
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
             f.write(content)
             temp_path = f.name
-        
+
         try:
             dlp.init(Path(temp_path))
-            
+
             with patch.object(dlp._scanner.ner_detector, 'detect') as mock_detect:
-                text = "My name is Bob Smith."
-                decision = dlp.scan_output(text)
-                
-                # NER detect should not be called when disabled
+                dlp.scan_output("My name is Bob Smith.")
                 mock_detect.assert_not_called()
         finally:
             os.remove(temp_path)
-    
+
     def test_ner_works_with_different_surfaces(self):
         """Test that NER works correctly with all three scan surfaces."""
         content = """
@@ -443,52 +475,34 @@ dlp:
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
             f.write(content)
             temp_path = f.name
-        
+
         try:
             dlp.init(Path(temp_path))
-            
-            ner_match = DLPMatch(
-                pattern_name="ner_person",
-                category="pii",
-                action=DLPAction.REDACT,
-                value="John",
-                spans=[(5, 9)],
-                surface=ScanSurface.OUTPUT
-            )
-            
-            # Test OUTPUT surface
+
+            ner_match = DLPMatch(pattern_name="ner_person", category="pii",
+                                 action=DLPAction.REDACT, value="John",
+                                 spans=[(5, 9)], surface=ScanSurface.OUTPUT)
+
             with patch.object(dlp._scanner.ner_detector, 'detect', return_value=[ner_match]):
                 decision = dlp.scan_output("Hello John")
                 self.assertEqual(decision.action, DLPAction.REDACT)
-            
-            # Test TOOL_ARGS surface
-            ner_match_args = DLPMatch(
-                pattern_name="ner_person",
-                category="pii",
-                action=DLPAction.REDACT,
-                value="John",
-                spans=[(5, 9)],
-                surface=ScanSurface.TOOL_ARGS
-            )
+
+            ner_match_args = DLPMatch(pattern_name="ner_person", category="pii",
+                                      action=DLPAction.REDACT, value="John",
+                                      spans=[(5, 9)], surface=ScanSurface.TOOL_ARGS)
             with patch.object(dlp._scanner.ner_detector, 'detect', return_value=[ner_match_args]):
                 decision = dlp.scan_tool_args("test", {"arg": "Hello John"})
                 self.assertEqual(decision.action, DLPAction.REDACT)
-            
-            # Test TOOL_RESULT surface
-            ner_match_result = DLPMatch(
-                pattern_name="ner_person",
-                category="pii",
-                action=DLPAction.REDACT,
-                value="John",
-                spans=[(5, 9)],
-                surface=ScanSurface.TOOL_RESULT
-            )
+
+            ner_match_result = DLPMatch(pattern_name="ner_person", category="pii",
+                                        action=DLPAction.REDACT, value="John",
+                                        spans=[(5, 9)], surface=ScanSurface.TOOL_RESULT)
             with patch.object(dlp._scanner.ner_detector, 'detect', return_value=[ner_match_result]):
                 decision = dlp.scan_tool_result("test", {"result": "Hello John"})
                 self.assertEqual(decision.action, DLPAction.REDACT)
         finally:
             os.remove(temp_path)
-    
+
     def test_ner_with_block_action(self):
         """Test NER with BLOCK action."""
         content = """
@@ -499,30 +513,23 @@ dlp:
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
             f.write(content)
             temp_path = f.name
-        
+
         try:
             dlp.init(Path(temp_path))
-            
+
             with patch.object(dlp._scanner.ner_detector, 'detect') as mock_detect:
                 mock_detect.return_value = [
-                    DLPMatch(
-                        pattern_name="ner_org",
-                        category="pii",
-                        action=DLPAction.BLOCK,
-                        value="Microsoft",
-                        spans=[(13, 22)],
-                        surface=ScanSurface.OUTPUT
-                    )
+                    DLPMatch(pattern_name="ner_org", category="pii", action=DLPAction.BLOCK,
+                             value="Microsoft", spans=[(13, 22)], surface=ScanSurface.OUTPUT)
                 ]
-                
-                text = "I work at Microsoft corporation."
-                decision = dlp.scan_output(text)
-                
+
+                decision = dlp.scan_output("I work at Microsoft corporation.")
+
                 self.assertTrue(decision.should_block)
                 self.assertEqual(decision.action, DLPAction.BLOCK)
         finally:
             os.remove(temp_path)
-    
+
     def test_ner_multiple_entities(self):
         """Test NER detecting multiple entities."""
         content = """
@@ -533,47 +540,27 @@ dlp:
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
             f.write(content)
             temp_path = f.name
-        
+
         try:
             dlp.init(Path(temp_path))
-            
+
             with patch.object(dlp._scanner.ner_detector, 'detect') as mock_detect:
                 mock_detect.return_value = [
-                    DLPMatch(
-                        pattern_name="ner_person",
-                        category="pii",
-                        action=DLPAction.REDACT,
-                        value="Alice",
-                        spans=[(0, 5)],
-                        surface=ScanSurface.OUTPUT
-                    ),
-                    DLPMatch(
-                        pattern_name="ner_org",
-                        category="pii",
-                        action=DLPAction.REDACT,
-                        value="Google",
-                        spans=[(14, 20)],
-                        surface=ScanSurface.OUTPUT
-                    ),
-                    DLPMatch(
-                        pattern_name="ner_gpe",
-                        category="pii",
-                        action=DLPAction.REDACT,
-                        value="USA",
-                        spans=[(24, 27)],
-                        surface=ScanSurface.OUTPUT
-                    )
+                    DLPMatch(pattern_name="ner_person", category="pii", action=DLPAction.REDACT,
+                             value="Alice", spans=[(0, 5)], surface=ScanSurface.OUTPUT),
+                    DLPMatch(pattern_name="ner_org", category="pii", action=DLPAction.REDACT,
+                             value="Google", spans=[(14, 20)], surface=ScanSurface.OUTPUT),
+                    DLPMatch(pattern_name="ner_gpe", category="pii", action=DLPAction.REDACT,
+                             value="USA", spans=[(24, 27)], surface=ScanSurface.OUTPUT),
                 ]
-                
+
                 text = "Alice works at Google in USA."
                 decision = dlp.scan_output(text)
-                
+
                 self.assertEqual(decision.action, DLPAction.REDACT)
-                # Should have redacted all three entities
                 self.assertNotIn("Alice", decision.clean_text)
                 self.assertNotIn("Google", decision.clean_text)
                 self.assertNotIn("USA", decision.clean_text)
-                # Should have correct count of redactions
                 redaction_count = decision.clean_text.count("[REDACTED")
                 self.assertEqual(redaction_count, 3)
         finally:

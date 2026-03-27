@@ -13,13 +13,19 @@ _enforcer: PolicyEnforcer | None = None
 _canary_engine: CanaryEngine | None = None
 
 
-def init(config_path: Path) -> None:
-    """Initialize the DLP module with a given policy file."""
+def init(config_path: Path | None = None) -> None:
+    """Initialize the DLP module with a given policy file.
+
+    If ``config_path`` is None or the file does not exist, built-in safe
+    defaults are used automatically.
+    """
     global _scanner, _enforcer, _canary_engine
-    config = load_dlp_config(config_path)
+    path = config_path if config_path is not None else Path("nonexistent_default.yaml")
+    config = load_dlp_config(path)
     _canary_engine = CanaryEngine(config)
     _scanner = DLPScanner(config, _canary_engine)
-    _enforcer = PolicyEnforcer()
+    # Pass config so the enforcer reads surface_overrides from policy, not hardcode.
+    _enforcer = PolicyEnforcer(config)
 
 
 def _ensure_initialized() -> None:
@@ -44,10 +50,15 @@ def scan_output(text: str) -> EnforcementDecision:
 
 
 def scan_tool_args(tool_name: str, args: dict[str, Any]) -> EnforcementDecision:
-    """Scans pending tool arguments before execution."""
+    """Scans pending tool arguments before execution.
+
+    Serialization is performed here (not inside PatternEngine) so that the
+    scanner always receives a plain string regardless of the args structure,
+    and so scan() can apply canary detection and NER to the same serialized
+    representation in a single pass.
+    """
     _ensure_initialized()
     assert _scanner is not None and _enforcer is not None
-    # Serialize to string to properly scan embedded secrets
     serialized = json.dumps(args, default=str)
     result = _scanner.scan(serialized, ScanSurface.TOOL_ARGS)
     return _enforcer.enforce(result)
@@ -57,12 +68,11 @@ def scan_tool_result(tool_name: str, result: Any) -> EnforcementDecision:
     """Scans the result of a tool execution before passing back to the agent."""
     _ensure_initialized()
     assert _scanner is not None and _enforcer is not None
-    
+
     if isinstance(result, (dict, list)):
         text_to_scan = json.dumps(result, default=str)
     else:
         text_to_scan = str(result)
-        
+
     res = _scanner.scan(text_to_scan, ScanSurface.TOOL_RESULT)
     return _enforcer.enforce(res)
-
