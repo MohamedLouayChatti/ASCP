@@ -40,16 +40,52 @@ The module gracefully degrades if PyYAML or spaCy are unavailable, logging appro
 ### Setup
 
 ```python
-from pathlib import Path
 import dlp
 
-# Initialize with a policy configuration file
-dlp.init(Path("policy.yaml"))
+# Option 1: Use built-in defaults (no configuration file needed)
+dlp.init()
+
+# Option 2: Use custom policy file
+from pathlib import Path
+dlp.init(Path("policy.yaml"))  # See policy.default.yaml template
 ```
 
 ## Configuration
 
-The DLP system is configured via YAML policy files. A complete example:
+The DLP system is configured via YAML policy files. **A complete default policy template is available at [`policy.default.yaml`](policy.default.yaml)** with comprehensive documentation for external developers.
+
+### Optional YAML Configuration
+
+If no custom policy file is provided to `dlp.init()`, the system automatically falls back to sensible built-in defaults that include:
+
+- **Secrets Detection**: OpenAI, AWS, and GitHub token patterns
+- **PII Detection**: Email addresses and IPv4 addresses
+- **Canary Tokens**: Three example canary labels for tracking information leakage
+
+This means you can use the DLP module without providing a configuration file:
+
+```python
+import dlp
+
+# Uses built-in defaults automatically
+dlp.init()  # No file needed; uses DLPConfig.defaults()
+```
+
+### Custom Policy Files
+
+To customize enforcement actions, detection patterns, or canary labels, copy `policy.default.yaml` and modify it:
+
+```python
+from pathlib import Path
+import dlp
+
+# Initialize with custom policy
+dlp.init(Path("policy.yaml"))
+```
+
+### Configuration Example
+
+Here's a complete policy configuration (also fully documented in [`policy.default.yaml`](policy.default.yaml)):
 
 ```yaml
 dlp:
@@ -320,18 +356,33 @@ This module is designed for integration into the ASCP framework:
 
 - Self-contained structure minimizes root-level conflicts
 - Policy-as-code approach enables centralized governance
+- **Optional configuration**: Works with built-in defaults if no custom policy provided
 - Detailed violation telemetry supports Layer D auditing
 - Per-surface enforcement enables nuanced policy implementation
 
-Place `policy.yaml` at the repository root or specified configuration path, then initialize DLP on startup:
+### Initialization Options
+
+**For development or quick start**: Use built-in defaults
 
 ```python
 from pathlib import Path
 import dlp
 
-# Application startup
-dlp.init(Path("policy.yaml"))
+# Application startup - uses built-in defaults
+dlp.init()
 ```
+
+**For production deployments**: Provide a custom policy file
+
+```python
+from pathlib import Path
+import dlp
+
+# Copy policy.default.yaml to your deployment location, customize as needed
+dlp.init(Path("config/policy.yaml"))
+```
+
+See [`policy.default.yaml`](policy.default.yaml) for all available configuration options and production deployment guidelines.
 
 ## Development Guidelines
 
