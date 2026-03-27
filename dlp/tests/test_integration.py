@@ -365,5 +365,220 @@ dlp:
                 self.assertNotIn(value, decision.safe_message)
 
 
+class TestNERIntegration(unittest.TestCase):
+    """Integration tests for NER (Named Entity Recognition) functionality."""
+    
+    def tearDown(self):
+        """Reset global state after each test."""
+        dlp._scanner = None
+        dlp._enforcer = None
+        dlp._canary_engine = None
+    
+    def test_ner_enabled_detects_entities(self):
+        """Test that NER detects entities when enabled."""
+        content = """
+dlp:
+  enable_ner: true
+  pii_action: REDACT
+"""
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
+            f.write(content)
+            temp_path = f.name
+        
+        try:
+            dlp.init(Path(temp_path))
+            
+            with patch.object(dlp._scanner.ner_detector, 'detect') as mock_detect:
+                mock_detect.return_value = [
+                    DLPMatch(
+                        pattern_name="ner_person",
+                        category="pii",
+                        action=DLPAction.REDACT,
+                        value="Alice Johnson",
+                        spans=[(10, 23)],
+                        surface=ScanSurface.OUTPUT
+                    )
+                ]
+                
+                text = "Say hello Alice Johnson today."
+                decision = dlp.scan_output(text)
+                
+                # NER should detect and redact
+                self.assertEqual(decision.action, DLPAction.REDACT)
+                self.assertIn("[REDACTED_pii_ner_person]", decision.clean_text)
+                self.assertNotIn("Alice Johnson", decision.clean_text)
+        finally:
+            os.remove(temp_path)
+    
+    def test_ner_disabled_skips_detection(self):
+        """Test that NER is skipped when disabled."""
+        content = """
+dlp:
+  enable_ner: false
+  pii_action: REDACT
+"""
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
+            f.write(content)
+            temp_path = f.name
+        
+        try:
+            dlp.init(Path(temp_path))
+            
+            with patch.object(dlp._scanner.ner_detector, 'detect') as mock_detect:
+                text = "My name is Bob Smith."
+                decision = dlp.scan_output(text)
+                
+                # NER detect should not be called when disabled
+                mock_detect.assert_not_called()
+        finally:
+            os.remove(temp_path)
+    
+    def test_ner_works_with_different_surfaces(self):
+        """Test that NER works correctly with all three scan surfaces."""
+        content = """
+dlp:
+  enable_ner: true
+  pii_action: REDACT
+"""
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
+            f.write(content)
+            temp_path = f.name
+        
+        try:
+            dlp.init(Path(temp_path))
+            
+            ner_match = DLPMatch(
+                pattern_name="ner_person",
+                category="pii",
+                action=DLPAction.REDACT,
+                value="John",
+                spans=[(5, 9)],
+                surface=ScanSurface.OUTPUT
+            )
+            
+            # Test OUTPUT surface
+            with patch.object(dlp._scanner.ner_detector, 'detect', return_value=[ner_match]):
+                decision = dlp.scan_output("Hello John")
+                self.assertEqual(decision.action, DLPAction.REDACT)
+            
+            # Test TOOL_ARGS surface
+            ner_match_args = DLPMatch(
+                pattern_name="ner_person",
+                category="pii",
+                action=DLPAction.REDACT,
+                value="John",
+                spans=[(5, 9)],
+                surface=ScanSurface.TOOL_ARGS
+            )
+            with patch.object(dlp._scanner.ner_detector, 'detect', return_value=[ner_match_args]):
+                decision = dlp.scan_tool_args("test", {"arg": "Hello John"})
+                self.assertEqual(decision.action, DLPAction.REDACT)
+            
+            # Test TOOL_RESULT surface
+            ner_match_result = DLPMatch(
+                pattern_name="ner_person",
+                category="pii",
+                action=DLPAction.REDACT,
+                value="John",
+                spans=[(5, 9)],
+                surface=ScanSurface.TOOL_RESULT
+            )
+            with patch.object(dlp._scanner.ner_detector, 'detect', return_value=[ner_match_result]):
+                decision = dlp.scan_tool_result("test", {"result": "Hello John"})
+                self.assertEqual(decision.action, DLPAction.REDACT)
+        finally:
+            os.remove(temp_path)
+    
+    def test_ner_with_block_action(self):
+        """Test NER with BLOCK action."""
+        content = """
+dlp:
+  enable_ner: true
+  pii_action: BLOCK
+"""
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
+            f.write(content)
+            temp_path = f.name
+        
+        try:
+            dlp.init(Path(temp_path))
+            
+            with patch.object(dlp._scanner.ner_detector, 'detect') as mock_detect:
+                mock_detect.return_value = [
+                    DLPMatch(
+                        pattern_name="ner_org",
+                        category="pii",
+                        action=DLPAction.BLOCK,
+                        value="Microsoft",
+                        spans=[(13, 22)],
+                        surface=ScanSurface.OUTPUT
+                    )
+                ]
+                
+                text = "I work at Microsoft corporation."
+                decision = dlp.scan_output(text)
+                
+                self.assertTrue(decision.should_block)
+                self.assertEqual(decision.action, DLPAction.BLOCK)
+        finally:
+            os.remove(temp_path)
+    
+    def test_ner_multiple_entities(self):
+        """Test NER detecting multiple entities."""
+        content = """
+dlp:
+  enable_ner: true
+  pii_action: REDACT
+"""
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
+            f.write(content)
+            temp_path = f.name
+        
+        try:
+            dlp.init(Path(temp_path))
+            
+            with patch.object(dlp._scanner.ner_detector, 'detect') as mock_detect:
+                mock_detect.return_value = [
+                    DLPMatch(
+                        pattern_name="ner_person",
+                        category="pii",
+                        action=DLPAction.REDACT,
+                        value="Alice",
+                        spans=[(0, 5)],
+                        surface=ScanSurface.OUTPUT
+                    ),
+                    DLPMatch(
+                        pattern_name="ner_org",
+                        category="pii",
+                        action=DLPAction.REDACT,
+                        value="Google",
+                        spans=[(14, 20)],
+                        surface=ScanSurface.OUTPUT
+                    ),
+                    DLPMatch(
+                        pattern_name="ner_gpe",
+                        category="pii",
+                        action=DLPAction.REDACT,
+                        value="USA",
+                        spans=[(24, 27)],
+                        surface=ScanSurface.OUTPUT
+                    )
+                ]
+                
+                text = "Alice works at Google in USA."
+                decision = dlp.scan_output(text)
+                
+                self.assertEqual(decision.action, DLPAction.REDACT)
+                # Should have redacted all three entities
+                self.assertNotIn("Alice", decision.clean_text)
+                self.assertNotIn("Google", decision.clean_text)
+                self.assertNotIn("USA", decision.clean_text)
+                # Should have correct count of redactions
+                redaction_count = decision.clean_text.count("[REDACTED")
+                self.assertEqual(redaction_count, 3)
+        finally:
+            os.remove(temp_path)
+
+
 if __name__ == '__main__':
     unittest.main()
