@@ -21,24 +21,34 @@ Tier 3: Optional Hooks
 """
 from __future__ import annotations
 
-from apps.adapters.base import (
-    ASCPAdapter,
-    CrewAIAdapter,
-    LangChainAdapter,
-    OpenAIAdapter,
-    crewai_adapter_tool,
-    langchain_adapter_wrapper,
-    openai_adapter_tools,
-)
-from apps.adapters.hooks import (
-    ASCPMemoryHook,
-    ASCPPlannerHook,
-    ASCPReasoningLoop,
-    LoopOutputGuardResult,
-    LoopRunResult,
-    ToolDecisionType,
-    ToolValidationResult,
-)
+from importlib import import_module
+
+_EXPORTS: dict[str, tuple[str, str]] = {
+    "ASCPAdapter": ("apps.adapters.base", "ASCPAdapter"),
+    "LangChainAdapter": ("apps.adapters.base", "LangChainAdapter"),
+    "CrewAIAdapter": ("apps.adapters.base", "CrewAIAdapter"),
+    "OpenAIAdapter": ("apps.adapters.base", "OpenAIAdapter"),
+    "langchain_adapter_wrapper": ("apps.adapters.base", "langchain_adapter_wrapper"),
+    "crewai_adapter_tool": ("apps.adapters.base", "crewai_adapter_tool"),
+    "openai_adapter_tools": ("apps.adapters.base", "openai_adapter_tools"),
+    "ASCPMemoryHook": ("apps.adapters.hooks", "ASCPMemoryHook"),
+    "ASCPPlannerHook": ("apps.adapters.hooks", "ASCPPlannerHook"),
+    "ASCPReasoningLoop": ("apps.adapters.hooks", "ASCPReasoningLoop"),
+    "LoopOutputGuardResult": ("apps.adapters.hooks", "LoopOutputGuardResult"),
+    "LoopRunResult": ("apps.adapters.hooks", "LoopRunResult"),
+    "ToolDecisionType": ("apps.adapters.hooks", "ToolDecisionType"),
+    "ToolValidationResult": ("apps.adapters.hooks", "ToolValidationResult"),
+}
+
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    module_name, attribute_name = _EXPORTS[name]
+    module = import_module(module_name)
+    value = getattr(module, attribute_name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     "ASCPAdapter",
