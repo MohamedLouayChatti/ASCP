@@ -546,6 +546,76 @@ def _risk_weight(level: str) -> float:
     return mapping.get(level, 0.4)
 
 
+@dataclass(frozen=True)
+class ResolvedContract:
+    contract_name: str
+    contract: dict[str, Any]
+
+
+def _normalize_schema_hash(value: Any) -> str:
+    normalized = str(value).strip().lower()
+    if normalized.startswith("sha256:"):
+        return normalized.split(":", 1)[1]
+    return normalized
+
+
+def _compute_schema_hash(schema: Any) -> str:
+    return hashlib.sha256(_stringify_json(schema).encode("utf-8")).hexdigest()
+
+
+def _schema_hashes_from_match(match_cfg: dict[str, Any]) -> set[str]:
+    hashes: list[Any] = []
+    for key in ("argument_schema_hashes", "arg_schema_hashes", "schema_hashes"):
+        value = match_cfg.get(key)
+        if isinstance(value, list):
+            hashes.extend(value)
+        elif value is not None:
+            hashes.append(value)
+    for key in ("argument_schema_hash", "arg_schema_hash", "schema_hash"):
+        value = match_cfg.get(key)
+        if value is not None:
+            hashes.append(value)
+    return {_normalize_schema_hash(item) for item in hashes if str(item).strip()}
+
+
+def _is_catch_all_match(name: str, contract: dict[str, Any]) -> bool:
+    if name == "*":
+        return True
+    match_cfg = contract.get("match", {})
+    if not isinstance(match_cfg, dict):
+        return False
+    return bool(match_cfg.get("catch_all") or match_cfg.get("default"))
+
+
+def _resolve_invocation_schema_hash(invocation_context: dict[str, Any] | None) -> str | None:
+    if not isinstance(invocation_context, dict):
+        return None
+
+    containers: list[dict[str, Any]] = [invocation_context]
+    for key in ("tool", "metadata", "tool_metadata", "observed_tool"):
+        nested = invocation_context.get(key)
+        if isinstance(nested, dict):
+            containers.append(nested)
+
+    for container in containers:
+        for key in (
+            "argument_schema_hash",
+            "arg_schema_hash",
+            "args_schema_hash",
+            "schema_hash",
+            "input_schema_hash",
+        ):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                return _normalize_schema_hash(value)
+
+        for key in ("argument_schema", "arg_schema", "args_schema", "input_schema", "parameters"):
+            if key in container and container[key] is not None:
+                return _compute_schema_hash(container[key])
+
+    return None
+
+
 class ContractValidator:
     """
     Loads tool, resource, and prompt contracts from YAML policy and enforces them
@@ -702,6 +772,32 @@ class ContractValidator:
                 raise PolicyValidationError(
                     f"Capability '{name}' approval_required must be boolean."
                 )
+            if "match" in contract and not isinstance(contract["match"], dict):
+                raise PolicyValidationError(f"Capability '{name}' match must be a mapping.")
+
+        schema_hash_owners: dict[str, str] = {}
+        catch_all_names: list[str] = []
+        for name, contract in self._get_capability_contracts(policy).items():
+            if not isinstance(contract, dict):
+                continue
+            match_cfg = contract.get("match", {})
+            if not isinstance(match_cfg, dict):
+                continue
+            for schema_hash in _schema_hashes_from_match(match_cfg):
+                owner = schema_hash_owners.get(schema_hash)
+                if owner is not None and owner != name:
+                    raise PolicyValidationError(
+                        "Capability schema hash matches must be unique; "
+                        f"'{name}' and '{owner}' both declare '{schema_hash}'."
+                    )
+                schema_hash_owners[schema_hash] = name
+            if _is_catch_all_match(name, contract):
+                catch_all_names.append(name)
+        if len(catch_all_names) > 1:
+            joined = ", ".join(catch_all_names)
+            raise PolicyValidationError(
+                f"Only one catch-all capability is allowed; found {joined}."
+            )
 
     def _load(self) -> None:
         self._schemas = {}
@@ -772,8 +868,53 @@ class ContractValidator:
             return copy.deepcopy(base_contract)
         return _deep_merge_dicts(base_contract, runtime)
 
-    def _validate_schema(self, kind: str, name: str, payload: dict[str, Any]) -> ContractResult | None:
-        schema = self._schemas.get((kind, name))
+    def _resolve_capability_contract(
+        self,
+        tool_name: str,
+        *,
+        invocation_context: dict[str, Any] | None = None,
+    ) -> ResolvedContract | None:
+        exact_contract = self._capability_permissions.get(tool_name)
+        if isinstance(exact_contract, dict):
+            return ResolvedContract(
+                contract_name=tool_name,
+                contract=self._merged_contract("tool", tool_name, exact_contract),
+            )
+
+        schema_hash = _resolve_invocation_schema_hash(invocation_context)
+        if schema_hash is not None:
+            for name, contract in self._capability_permissions.items():
+                if not isinstance(contract, dict):
+                    continue
+                match_cfg = contract.get("match", {})
+                if not isinstance(match_cfg, dict):
+                    continue
+                if schema_hash in _schema_hashes_from_match(match_cfg):
+                    return ResolvedContract(
+                        contract_name=name,
+                        contract=self._merged_contract("tool", name, contract),
+                    )
+
+        for name, contract in self._capability_permissions.items():
+            if not isinstance(contract, dict):
+                continue
+            if _is_catch_all_match(name, contract):
+                return ResolvedContract(
+                    contract_name=name,
+                    contract=self._merged_contract("tool", name, contract),
+                )
+
+        return None
+
+    def _validate_schema(
+        self,
+        kind: str,
+        schema_name: str,
+        payload: dict[str, Any],
+        *,
+        result_name: str | None = None,
+    ) -> ContractResult | None:
+        schema = self._schemas.get((kind, schema_name))
         if not schema:
             return None
         try:
@@ -781,7 +922,7 @@ class ContractValidator:
         except ValidationError as exc:
             return ContractResult(
                 decision=ContractDecision.BLOCK,
-                tool_name=name,
+                tool_name=result_name or schema_name,
                 reason_code="SCHEMA_VIOLATION",
                 details=exc.message,
                 violations=["I2"],
@@ -1551,7 +1692,11 @@ class ContractValidator:
     ) -> ContractResult:
         self._maybe_reload()
 
-        if tool_name not in self._capability_permissions:
+        resolved_contract = self._resolve_capability_contract(
+            tool_name,
+            invocation_context=invocation_context,
+        )
+        if resolved_contract is None:
             baseline_result = self._apply_baseline_guardrails(
                 tool_name,
                 args,
@@ -1581,8 +1726,13 @@ class ContractValidator:
                 invocation_context=invocation_context,
             )
 
-        contract = self._merged_contract("tool", tool_name, self._capability_permissions[tool_name])
-        schema_result = self._validate_schema("tool", tool_name, args)
+        contract = resolved_contract.contract
+        schema_result = self._validate_schema(
+            "tool",
+            resolved_contract.contract_name,
+            args,
+            result_name=tool_name,
+        )
         if schema_result is not None:
             return self._finalize_result(
                 component_type=ComponentType.TOOL.value,
