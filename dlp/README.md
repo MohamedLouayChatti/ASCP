@@ -10,11 +10,21 @@ The DLP module operates as Layer C of the ASCP framework, providing real-time sc
 - **TOOL_ARGS**: Tool parameters and arguments before execution
 - **TOOL_RESULT**: Data returned from external tools
 
-The system detects three categories of sensitive information:
+The system employs an advanced 10-layer detection pipeline across three categories of sensitive information:
 
-1. **Secrets**: API keys, credentials (OpenAI, AWS, GitHub)
-2. **Personally Identifiable Information (PII)**: Email addresses, phone numbers (configurable via Named Entity Recognition)
-3. **Canary Leaks**: Injected tokens that detect unauthorized information extraction
+1. **Secrets**: 
+   - Exact pattern matching (OpenAI, AWS, GitHub)
+   - **Shannon Entropy Detection** catches novel formats using mathematical randomness.
+2. **Personally Identifiable Information (PII)**: 
+   - Regex matching (Email, IPv4, Credit Cards)
+   - **Luhn Algorithm Validation** massively reduces credit card false positives.
+   - Optional **Named Entity Recognition (NER)** via spaCy.
+3. **Canary Leaks & Intellectual Property**: 
+   - Cryptographic canary token injection.
+   - **Fuzzy Canary Matching** detects subtle token manipulation by LLMs.
+   - **Document Fingerprinting** blocks verbatim reproduction of confidential RAG contexts.
+
+Advanced processing capabilities include **Contextual Window Analysis** to downgrade examples/documentation safely, **Format-Preserving Redaction** to keep pipelines running, and **Structured Data Scanning** for precise JSON/dict path attribution.
 
 ## Design Philosophy
 
@@ -113,6 +123,29 @@ dlp:
       regex: "[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]*[a-zA-Z0-9-]"
     - name: ipv4
       regex: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"
+    - name: credit_card
+      regex: "\\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\\b"
+
+  # Advanced Features (all strictly opt-in)
+  luhn_validation: true
+  format_preserving_redaction: true
+  enable_structured_scan: false
+
+  entropy:
+    enabled: true
+    threshold: 4.5
+  
+  context_analysis:
+    enabled: true
+    window: 50
+    on_negation: downgrade
+
+  canary_fuzzy_match: true
+  canary_fuzzy_overlap: 0.8
+
+  fingerprinting:
+    enabled: true
+    threshold: 0.3
 ```
 
 ### Configuration Validation
@@ -251,6 +284,13 @@ Optional Named Entity Recognition via spaCy:
 - Graceful degradation: If spaCy is unavailable or models cannot be loaded, returns empty matches and logs warnings
 - Lazy loading: Model is only loaded on first detection call
 
+#### *Advanced Detectors* (`entropy.py`, `validators.py`, `context.py`, `fingerprint.py`, `structured.py`)
+- `EntropyScanner`: Calculates Shannon entropy for catching novel secrets.
+- `MatchValidator`: Runs Luhn checksums on credit cards.
+- `ContextAnalyzer`: Suppresses non-critical matches surrounded by 'documentation' keywords.
+- `DocumentFingerprinter`: Retains stateful word trigrams of injected context to block verbatim reproduction.
+- `scan_dict()`: Recursively walks JSON tools/results for exact path attribution.
+
 #### `scanner.py`
 Orchestrates all detection engines:
 
@@ -275,17 +315,23 @@ User-facing message generation:
 
 ### Data Flow
 
-```
-Input Text
+```text
+Input Text / Tool Dictionary
     ↓
-DLPScanner.scan()
-    ├→ CanaryEngine.detect()      → CanaryHit[]
-    ├→ PatternEngine.scan_text()   → DLPMatch[] + redacted_text
-    └→ NERDetector.detect()        → DLPMatch[] (if enabled)
+DLPScanner.scan_structured()
+    ├→ Structured Walk (JSON elements)
+    │   ├→ PatternEngine.scan() (Regex)
+    │   ├→ MatchValidator.filter() (Luhn validation)
+    │   ├→ ContextAnalyzer.filter() (Window suppression)
+    │   └→ EntropyScanner.scan() (Shannon entropy)
+    ├→ Global String Pass
+    │   ├→ CanaryEngine.detect() (Exact + Fuzzy)
+    │   ├→ NERDetector.detect() (Optional spaCy)
+    │   └→ DocumentFingerprinter.scan() (Verbatim checks)
     ↓
-    Collect all violations and redactions
+    Collect all violations (with precise JSON paths) and redactions
     ↓
-    Apply unified redaction pass
+    Apply unified redaction / Format-preserving placeholders
     ↓
 DLPResult
     ↓
