@@ -1,4 +1,4 @@
-# ASCP Global Policies
+# Global SDK Policies
 # policy-as-code: all changes must be versioned and reviewed
 
 version: "1.0"
@@ -13,20 +13,20 @@ enforcement_mode: strict
 # Grounding thresholds (Layer A)
 # ---------------------------------------------------------------------------
 grounding:
-  min_grounding_score: 0.6          # below this → safe fallback
-  max_hallucination_risk: 0.4       # above this → safe fallback
-  min_context_relevance: 0.3        # below this → retrieve-more hint
+  min_grounding_score: 0.6          # below this -> safe fallback
+  max_hallucination_risk: 0.4       # above this -> safe fallback
+  min_context_relevance: 0.3        # below this -> retrieve-more hint
   abstain_on_insufficient_context: true
 
 # ---------------------------------------------------------------------------
 # DLP rules (Layer C)
 # ---------------------------------------------------------------------------
 dlp:
-  # Canary tokens – NEVER appear in any output
+  # Canary tokens should never appear in any output.
   canary_action: block              # block | redact | escalate
   canary_strict: true
 
-  # Secrets patterns
+  # Secret patterns
   secrets_action: block
   secrets_patterns:
     - name: api_key_generic
@@ -54,7 +54,7 @@ dlp:
     - name: credit_card
       regex: '\b(?:\d[ \-]?){13,16}\b'
 
-  # Optional NER-based PII detection (requires spaCy model)
+  # Optional NER-based PII detection (requires a spaCy model)
   ner_pii_detection: false
 
 # ---------------------------------------------------------------------------

@@ -6,23 +6,19 @@ capabilities:
     - network
     approval_required: false
     schema: schemas/web_fetch.schema.json
+    description: Fetch public HTTP(S) content while blocking private and internal network targets.
     constraints:
       allowed_schemes:
       - http
       - https
       resolve_dns: true
-      domain_allowlist:
-      - wikipedia.org
-      - arxiv.org
-      - github.com
-      - docs.python.org
-      - pypi.org
       domain_denylist:
       - 169.254.169.254
       - metadata.google.internal
       - localhost
       - 127.0.0.1
       - 0.0.0.0
+      - ::1
       cidr_denylist:
       - 127.0.0.0/8
       - 10.0.0.0/8
@@ -32,8 +28,6 @@ capabilities:
       - ::1/128
       - fc00::/7
       - fe80::/10
-      max_response_bytes: 1048576
-      timeout_seconds: 10
   file_write:
     risk: high
     scopes:
@@ -41,25 +35,29 @@ capabilities:
     - write
     approval_required: true
     schema: schemas/file_write.schema.json
+    description: Write local files after approval; production apps should narrow writable roots explicitly.
     constraints:
-      path_allowlist:
-      - /app/apps/workspace/docs
       deny_path_traversal: true
-      max_content_bytes: 1048576
+      path_denylist:
+      - /etc
+      - /proc
+      - /sys
+      - /root
+      - C:/Windows
+      - C:/Program Files
+      - C:/ProgramData
+      max_arg_lengths:
+        content: 1048576
   db_query:
     risk: medium
     scopes:
     - read_only
     approval_required: true
     schema: schemas/db_query.schema.json
+    description: Execute read-only SQL queries after approval.
     constraints:
       sql_mode: select_only
       deny_multi_statement: true
-      allowlisted_tables:
-      - products
-      - articles
-      - public_data
-      max_rows: 100
   send_email:
     risk: high
     scopes:
@@ -68,51 +66,59 @@ capabilities:
     - write
     approval_required: true
     schema: schemas/send_email.schema.json
+    description: Send outbound email after approval; integrators can layer recipient restrictions as needed.
     constraints:
-      recipient_domain_allowlist:
-      - company.com
-      - internal.org
       max_body_chars: 5000
-      max_recipients: 5
-      allow_attachments: false
   shell_exec:
-    risk: medium
-    scopes:
-    - custom
-    approval_required: false
-    description: Developer-added tool 'shell_exec'.
-    constraints: {}
-  file_read:
-    risk: medium
-    scopes:
-    - custom
-    approval_required: false
-    description: Read a file from the approved workspace area.
-    constraints: {}
-  classified_file_read:
-    risk: medium
+    risk: high
     scopes:
     - custom
     approval_required: true
-    description: Read a file from the approved classified workspace area.
-    constraints: {}
-resources:
-  workspace_docs:
-    risk: low
+    description: Execute shell commands only with explicit approval.
+    constraints:
+      max_arg_lengths:
+        command: 2000
+      arg_rules:
+      - field: command
+        op: regex
+        value: (?i)\b(rm\s+-rf|del\s+/[qs]|format\s+[a-z]:|mkfs|shutdown|reboot)\b
+        reason: SHELL_DESTRUCTIVE_PATTERN_BLOCKED
+        details: The requested shell command matches a destructive command pattern.
+  file_read:
+    risk: medium
+    scopes:
+    - local_fs
     approval_required: false
+    description: Read local files while blocking obvious sensitive system locations.
+    constraints:
+      deny_path_traversal: true
+      path_denylist:
+      - /etc
+      - /proc
+      - /sys
+      - /root
+      - C:/Windows
+      - C:/Program Files
+      - C:/ProgramData
+
+resources:
+  local_file_resource:
+    risk: medium
+    approval_required: true
     match:
-      uri_prefixes:
-      - file:///app/apps/workspace/docs/
-      - file:///C:/ML/ascp/apps/workspace/docs/
+      schemes:
+      - file
     constraints:
       allowed_schemes:
       - file
-      path_allowlist:
-      - /app/apps/workspace/docs
-      - C:/ML/ascp/apps/workspace/docs
       path_denylist:
-      - /app/apps/workspace/secrets
-      - C:/ML/ascp/apps/workspace/secrets
+      - /etc
+      - /proc
+      - /sys
+      - /root
+      - C:/Windows
+      - C:/Program Files
+      - C:/ProgramData
   public_https:
     risk: medium
     approval_required: false
@@ -122,32 +128,20 @@ resources:
     constraints:
       allowed_schemes:
       - https
+      resolve_dns: true
       domain_denylist:
+      - 169.254.169.254
       - metadata.google.internal
       - localhost
+      - 127.0.0.1
+      - 0.0.0.0
+      - ::1
       cidr_denylist:
       - 127.0.0.0/8
       - 10.0.0.0/8
       - 172.16.0.0/12
       - 192.168.0.0/16
       - 169.254.0.0/16
-  file:///C:/ML/ascp/apps/workspace/docs/readme.txt:
-    agents: []
-    component_type: resource
-    descriptions: []
-    first_seen_at: '2026-03-25T11:36:13.987403+00:00'
-    frameworks:
-    - native_mcp
-    last_metadata:
-      framework: native_mcp
-      registered: true
-      source: read
-      uri: file:///C:/ML/ascp/readme.txt
-    last_seen_at: '2026-03-25T11:37:01.620845+00:00'
-    name: file:///C:/ML/ascp/apps/workspace/docs/readme.txt
-    observation_count: 2
-    sources:
-    - read
 prompts:
   retrieval_summary:
     risk: low
