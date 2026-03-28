@@ -23,6 +23,7 @@ import os
 import re
 import socket
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -648,7 +649,6 @@ class ContractValidator:
         self._unknown_capability_mode = unknown_capability_mode
         self._raw_policy: dict[str, Any] = {}
         self._capability_permissions: dict[str, Any] = {}
-        self._tool_permissions: dict[str, Any] = {}
         self._resource_permissions: dict[str, Any] = {}
         self._prompt_permissions: dict[str, Any] = {}
         self._capability_sequences: dict[str, Any] = {}
@@ -719,6 +719,77 @@ class ContractValidator:
             invocation_context=invocation_context,
         )
         return result
+
+    def _finalize_component_result(
+        self,
+        *,
+        component_type: str,
+        component_name: str,
+        args: dict[str, Any],
+        result: ContractResult,
+        agent_id: str,
+        framework: str,
+        invocation_context: dict[str, Any] | None = None,
+    ) -> ContractResult:
+        return self._finalize_result(
+            component_type=component_type,
+            component_name=component_name,
+            args=args,
+            result=result,
+            agent_id=agent_id,
+            framework=framework,
+            invocation_context=invocation_context,
+        )
+
+    def _block_result(
+        self,
+        name: str,
+        reason_code: str,
+        details: str,
+        *,
+        violation: str = "I1",
+    ) -> ContractResult:
+        return ContractResult(
+            decision=ContractDecision.BLOCK,
+            tool_name=name,
+            reason_code=reason_code,
+            details=details,
+            violations=[violation],
+        )
+
+    def _run_component_checks(
+        self,
+        *,
+        component_type: str,
+        component_name: str,
+        args: dict[str, Any],
+        agent_id: str,
+        framework: str,
+        checks: list[Callable[[], ContractResult | None]],
+        success_result: ContractResult,
+        invocation_context: dict[str, Any] | None = None,
+    ) -> ContractResult:
+        for check in checks:
+            result = check()
+            if result is not None:
+                return self._finalize_component_result(
+                    component_type=component_type,
+                    component_name=component_name,
+                    args=args,
+                    result=result,
+                    agent_id=agent_id,
+                    framework=framework,
+                    invocation_context=invocation_context,
+                )
+        return self._finalize_component_result(
+            component_type=component_type,
+            component_name=component_name,
+            args=args,
+            result=success_result,
+            agent_id=agent_id,
+            framework=framework,
+            invocation_context=invocation_context,
+        )
 
     def _get_capability_contracts(self, policy: dict[str, Any]) -> dict[str, Any]:
         capabilities = policy.get("capabilities")
@@ -807,7 +878,6 @@ class ContractValidator:
             self._validate_policy_shape(raw)
             self._raw_policy = raw
             self._capability_permissions = self._get_capability_contracts(raw)
-            self._tool_permissions = self._capability_permissions
             self._resource_permissions = raw.get("resources", {})
             self._prompt_permissions = raw.get("prompts", {})
             self._capability_sequences = self._get_capability_sequence_policy(raw)
@@ -817,7 +887,6 @@ class ContractValidator:
             logger.warning("Tool permissions file not found: %s", self._permissions_path)
             self._raw_policy = {}
             self._capability_permissions = {}
-            self._tool_permissions = {}
             self._resource_permissions = {}
             self._prompt_permissions = {}
             self._capability_sequences = {}
@@ -904,6 +973,15 @@ class ContractValidator:
                     contract=self._merged_contract("tool", name, contract),
                 )
 
+        return None
+
+    def _resolve_resource_contract(self, resource_uri: str) -> ResolvedContract | None:
+        for name, contract in self._resource_permissions.items():
+            if _find_resource_match(resource_uri, name, contract):
+                return ResolvedContract(
+                    contract_name=name,
+                    contract=self._merged_contract("resource", name, contract),
+                )
         return None
 
     def _validate_schema(
@@ -1691,6 +1769,7 @@ class ContractValidator:
         invocation_context: dict[str, Any] | None = None,
     ) -> ContractResult:
         self._maybe_reload()
+        component_type = ComponentType.TOOL.value
 
         resolved_contract = self._resolve_capability_contract(
             tool_name,
@@ -1703,8 +1782,8 @@ class ContractValidator:
                 approval_token=approval_token,
             )
             if baseline_result is not None:
-                return self._finalize_result(
-                    component_type=ComponentType.TOOL.value,
+                return self._finalize_component_result(
+                    component_type=component_type,
                     component_name=tool_name,
                     args=args,
                     result=baseline_result,
@@ -1712,8 +1791,8 @@ class ContractValidator:
                     framework=framework,
                     invocation_context=invocation_context,
                 )
-            return self._finalize_result(
-                component_type=ComponentType.TOOL.value,
+            return self._finalize_component_result(
+                component_type=component_type,
                 component_name=tool_name,
                 args=args,
                 result=self._handle_unknown_capability(
@@ -1733,111 +1812,45 @@ class ContractValidator:
             args,
             result_name=tool_name,
         )
-        if schema_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.TOOL.value,
-                component_name=tool_name,
-                args=args,
-                result=schema_result,
-                agent_id=agent_id,
-                framework=framework,
-                invocation_context=invocation_context,
-            )
-
-        identity_result = self._validate_identity_constraints(
-            tool_name,
-            agent_id=agent_id,
-            framework=framework,
-            constraints=contract.get("constraints", {}),
-        )
-        if identity_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.TOOL.value,
-                component_name=tool_name,
-                args=args,
-                result=identity_result,
-                agent_id=agent_id,
-                framework=framework,
-                invocation_context=invocation_context,
-            )
-
-        sequence_result = self._validate_capability_sequence(
-            tool_name,
-            contract,
-            evidence_ids=evidence_ids,
-            invocation_context=invocation_context,
-            approval_token=approval_token,
-        )
-        if sequence_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.TOOL.value,
-                component_name=tool_name,
-                args=args,
-                result=sequence_result,
-                agent_id=agent_id,
-                framework=framework,
-                invocation_context=invocation_context,
-            )
-
-        preconditions_result = self._validate_preconditions(
-            tool_name,
-            constraints=contract.get("constraints", {}),
-            evidence_ids=evidence_ids,
-            trust_vector=trust_vector,
-        )
-        if preconditions_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.TOOL.value,
-                component_name=tool_name,
-                args=args,
-                result=preconditions_result,
-                agent_id=agent_id,
-                framework=framework,
-                invocation_context=invocation_context,
-            )
-
-        constraint_result = self._validate_common_constraints(
-            tool_name,
-            args,
-            contract.get("constraints", {}),
-        )
-        if constraint_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.TOOL.value,
-                component_name=tool_name,
-                args=args,
-                result=constraint_result,
-                agent_id=agent_id,
-                framework=framework,
-                invocation_context=invocation_context,
-            )
-
-        approval_result = self._issue_or_validate_approval(
-            component_type="tool",
+        constraints = contract.get("constraints", {})
+        return self._run_component_checks(
+            component_type=component_type,
             component_name=tool_name,
             args=args,
-            approval_token=approval_token,
-            approval_required=contract.get("approval_required", False),
-        )
-        if approval_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.TOOL.value,
-                component_name=tool_name,
-                args=args,
-                result=approval_result,
-                agent_id=agent_id,
-                framework=framework,
-                invocation_context=invocation_context,
-            )
-
-        return self._finalize_result(
-            component_type=ComponentType.TOOL.value,
-            component_name=tool_name,
-            args=args,
-            result=self._allow_result(tool_name, args),
             agent_id=agent_id,
             framework=framework,
             invocation_context=invocation_context,
+            checks=[
+                lambda: schema_result,
+                lambda: self._validate_identity_constraints(
+                    tool_name,
+                    agent_id=agent_id,
+                    framework=framework,
+                    constraints=constraints,
+                ),
+                lambda: self._validate_capability_sequence(
+                    tool_name,
+                    contract,
+                    evidence_ids=evidence_ids,
+                    invocation_context=invocation_context,
+                    approval_token=approval_token,
+                ),
+                lambda: self._validate_preconditions(
+                    tool_name,
+                    constraints=constraints,
+                    evidence_ids=evidence_ids,
+                    trust_vector=trust_vector,
+                ),
+                lambda: self._validate_common_constraints(tool_name, args, constraints),
+                lambda: self._issue_or_validate_approval(
+                    component_type="tool",
+                    component_name=tool_name,
+                    args=args,
+                    approval_token=approval_token,
+                    approval_required=contract.get("approval_required", False),
+                ),
+            ],
+            success_result=self._allow_result(tool_name, args),
         )
 
     def validate_capability_call(
@@ -1872,104 +1885,62 @@ class ContractValidator:
         framework: str = "custom",
     ) -> ContractResult:
         self._maybe_reload()
+        component_type = ComponentType.RESOURCE.value
 
-        matched_name: str | None = None
-        matched_contract: dict[str, Any] | None = None
-        for name, contract in self._resource_permissions.items():
-            if _find_resource_match(resource_uri, name, contract):
-                matched_name = name
-                matched_contract = self._merged_contract("resource", name, contract)
-                break
-
-        if matched_name is None or matched_contract is None:
-            return self._finalize_result(
-                component_type=ComponentType.RESOURCE.value,
+        resolved_contract = self._resolve_resource_contract(resource_uri)
+        if resolved_contract is None:
+            return self._finalize_component_result(
+                component_type=component_type,
                 component_name=resource_uri,
                 args={"uri": resource_uri},
-                result=ContractResult(
-                decision=ContractDecision.BLOCK,
-                tool_name=resource_uri,
-                reason_code="RESOURCE_NOT_REGISTERED",
-                details=f"Resource '{resource_uri}' is not in the registry.",
-                violations=["I1"],
+                result=self._block_result(
+                    resource_uri,
+                    "RESOURCE_NOT_REGISTERED",
+                    f"Resource '{resource_uri}' is not in the registry.",
                 ),
                 agent_id=agent_id,
                 framework=framework,
             )
 
+        matched_name = resolved_contract.contract_name
+        matched_contract = resolved_contract.contract
         payload = {"uri": resource_uri}
         schema_result = self._validate_schema("resource", matched_name, payload)
-        if schema_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.RESOURCE.value,
-                component_name=matched_name,
-                args=payload,
-                result=schema_result,
-                agent_id=agent_id,
-                framework=framework,
-            )
-
-        identity_result = self._validate_identity_constraints(
-            matched_name,
-            agent_id=agent_id,
-            framework=framework,
-            constraints=matched_contract.get("constraints", {}),
-        )
-        if identity_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.RESOURCE.value,
-                component_name=matched_name,
-                args=payload,
-                result=identity_result,
-                agent_id=agent_id,
-                framework=framework,
-            )
-
         parsed = urlparse(resource_uri)
         constraint_payload = {
             "uri": resource_uri,
             "url": resource_uri,
             "path": _normalize_uri_path(parsed.path or resource_uri),
         }
-        constraint_result = self._validate_common_constraints(
-            matched_name,
-            constraint_payload,
-            matched_contract.get("constraints", {}),
-        )
-        if constraint_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.RESOURCE.value,
-                component_name=matched_name,
-                args=payload,
-                result=constraint_result,
-                agent_id=agent_id,
-                framework=framework,
-            )
-
-        approval_result = self._issue_or_validate_approval(
-            component_type="resource",
+        constraints = matched_contract.get("constraints", {})
+        return self._run_component_checks(
+            component_type=component_type,
             component_name=matched_name,
             args=payload,
-            approval_token=approval_token,
-            approval_required=matched_contract.get("approval_required", False),
-        )
-        if approval_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.RESOURCE.value,
-                component_name=matched_name,
-                args=payload,
-                result=approval_result,
-                agent_id=agent_id,
-                framework=framework,
-            )
-
-        return self._finalize_result(
-            component_type=ComponentType.RESOURCE.value,
-            component_name=matched_name,
-            args=payload,
-            result=self._allow_result(matched_name, payload),
             agent_id=agent_id,
             framework=framework,
+            checks=[
+                lambda: schema_result,
+                lambda: self._validate_identity_constraints(
+                    matched_name,
+                    agent_id=agent_id,
+                    framework=framework,
+                    constraints=constraints,
+                ),
+                lambda: self._validate_common_constraints(
+                    matched_name,
+                    constraint_payload,
+                    constraints,
+                ),
+                lambda: self._issue_or_validate_approval(
+                    component_type="resource",
+                    component_name=matched_name,
+                    args=payload,
+                    approval_token=approval_token,
+                    approval_required=matched_contract.get("approval_required", False),
+                ),
+            ],
+            success_result=self._allow_result(matched_name, payload),
         )
 
     def validate_prompt_get(
@@ -1982,18 +1953,17 @@ class ContractValidator:
         framework: str = "custom",
     ) -> ContractResult:
         self._maybe_reload()
+        component_type = ComponentType.PROMPT.value
 
         if prompt_name not in self._prompt_permissions:
-            return self._finalize_result(
-                component_type=ComponentType.PROMPT.value,
+            return self._finalize_component_result(
+                component_type=component_type,
                 component_name=prompt_name,
                 args=args,
-                result=ContractResult(
-                decision=ContractDecision.BLOCK,
-                tool_name=prompt_name,
-                reason_code="PROMPT_NOT_REGISTERED",
-                details=f"Prompt '{prompt_name}' is not in the prompt registry.",
-                violations=["I1"],
+                result=self._block_result(
+                    prompt_name,
+                    "PROMPT_NOT_REGISTERED",
+                    f"Prompt '{prompt_name}' is not in the prompt registry.",
                 ),
                 agent_id=agent_id,
                 framework=framework,
@@ -2001,71 +1971,31 @@ class ContractValidator:
 
         contract = self._merged_contract("prompt", prompt_name, self._prompt_permissions[prompt_name])
         schema_result = self._validate_schema("prompt", prompt_name, args)
-        if schema_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.PROMPT.value,
-                component_name=prompt_name,
-                args=args,
-                result=schema_result,
-                agent_id=agent_id,
-                framework=framework,
-            )
-
-        identity_result = self._validate_identity_constraints(
-            prompt_name,
-            agent_id=agent_id,
-            framework=framework,
-            constraints=contract.get("constraints", {}),
-        )
-        if identity_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.PROMPT.value,
-                component_name=prompt_name,
-                args=args,
-                result=identity_result,
-                agent_id=agent_id,
-                framework=framework,
-            )
-
-        constraint_result = self._validate_common_constraints(
-            prompt_name,
-            args,
-            contract.get("constraints", {}),
-        )
-        if constraint_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.PROMPT.value,
-                component_name=prompt_name,
-                args=args,
-                result=constraint_result,
-                agent_id=agent_id,
-                framework=framework,
-            )
-
-        approval_result = self._issue_or_validate_approval(
-            component_type="prompt",
+        constraints = contract.get("constraints", {})
+        return self._run_component_checks(
+            component_type=component_type,
             component_name=prompt_name,
             args=args,
-            approval_token=approval_token,
-            approval_required=contract.get("approval_required", False),
-        )
-        if approval_result is not None:
-            return self._finalize_result(
-                component_type=ComponentType.PROMPT.value,
-                component_name=prompt_name,
-                args=args,
-                result=approval_result,
-                agent_id=agent_id,
-                framework=framework,
-            )
-
-        return self._finalize_result(
-            component_type=ComponentType.PROMPT.value,
-            component_name=prompt_name,
-            args=args,
-            result=self._allow_result(prompt_name, args),
             agent_id=agent_id,
             framework=framework,
+            checks=[
+                lambda: schema_result,
+                lambda: self._validate_identity_constraints(
+                    prompt_name,
+                    agent_id=agent_id,
+                    framework=framework,
+                    constraints=constraints,
+                ),
+                lambda: self._validate_common_constraints(prompt_name, args, constraints),
+                lambda: self._issue_or_validate_approval(
+                    component_type="prompt",
+                    component_name=prompt_name,
+                    args=args,
+                    approval_token=approval_token,
+                    approval_required=contract.get("approval_required", False),
+                ),
+            ],
+            success_result=self._allow_result(prompt_name, args),
         )
 
     def sanitize_output(self, tool_name: str, output: Any) -> Any:
@@ -2113,8 +2043,7 @@ class ContractValidator:
         return sanitized
 
     def list_tools(self) -> list[str]:
-        self._maybe_reload()
-        return list(self._capability_permissions.keys())
+        return self.list_capabilities()
 
     def list_capabilities(self) -> list[str]:
         self._maybe_reload()
@@ -2129,8 +2058,7 @@ class ContractValidator:
         return list(self._prompt_permissions.keys())
 
     def get_risk_level(self, tool_name: str) -> str:
-        self._maybe_reload()
-        return self._capability_permissions.get(tool_name, {}).get("risk", RiskLevel.UNKNOWN.value)
+        return self.get_capability_risk_level(tool_name)
 
     def get_capability_risk_level(self, capability_name: str) -> str:
         self._maybe_reload()
@@ -2139,9 +2067,7 @@ class ContractValidator:
         )
 
     def get_tool_contract(self, tool_name: str) -> dict[str, Any]:
-        self._maybe_reload()
-        base = self._capability_permissions.get(tool_name, {})
-        return copy.deepcopy(self._merged_contract("tool", tool_name, base)) if base else {}
+        return self.get_capability_contract(tool_name)
 
     def get_capability_contract(self, capability_name: str) -> dict[str, Any]:
         self._maybe_reload()
