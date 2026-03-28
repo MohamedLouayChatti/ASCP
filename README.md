@@ -15,6 +15,33 @@ Its job is simple:
 
 Layer B does not execute tools. It decides whether a capability, resource read, or prompt access is permitted.
 
+## How it works
+
+```mermaid
+flowchart TD
+    A[Call arrives] --> B[Resolve contract]
+    B -->|Exact name| C[Matched contract]
+    B -->|Schema hash| C
+    B -->|Catch-all| C
+    B -->|No match| U[Unknown capability path]
+
+    C --> D[Schema validation]
+    D --> E[Identity constraints]
+    E --> F[Sequence / workflow checks]
+    F --> G[Preconditions]
+    G --> H[Common constraints]
+    H --> I{Approval required?}
+    I -->|Yes| J[Require approval]
+    I -->|No| K[Allow]
+
+    U --> L[Baseline guardrails]
+    L --> M{Unknown mode}
+    M -->|strict_block| N[Block]
+    M -->|require_approval| J
+    M -->|sandbox_allow / discover_only| K
+
+```
+
 
 
 ## Architecture
@@ -88,6 +115,8 @@ They usually include:
 - matching rules like `uri_prefixes` or `schemes`
 - path and domain constraints
 - approval requirements
+
+
 
 ### `prompts`
 
