@@ -20,6 +20,7 @@ from apps.gateway.middleware.pep_tool import (
     PolicyValidationError,
     RiskLevel,
 )
+from apps.gateway.policies import ContractCandidateGenerator, IncidentFeedbackGenerator, PolicyEditor
 
 CapabilityResult = ContractResult
 CapabilityValidator = ContractValidator
@@ -46,11 +47,12 @@ class LayerBPolicy:
         return ContractValidator(
             self.paths.policy_path,
             self.paths.schemas_dir,
-            unknown_capability_mode=os.getenv("ASCP_UNKNOWN_CAPABILITY_MODE", "require_approval"),
+            unknown_capability_mode=os.getenv("ASCP_UNKNOWN_CAPABILITY_MODE", "auto_allow"),
+            audit_log_path=os.getenv("ASCP_LAYER_B_EVENT_LOG"),
             langwatch_enabled=bool(os.getenv("LANGWATCH_KEY") or os.getenv("LANGWATCH_API_KEY")),
             langwatch_api_key=os.getenv("LANGWATCH_KEY") or os.getenv("LANGWATCH_API_KEY"),
             langwatch_endpoint=os.getenv("LANGWATCH_ENDPOINT"),
-            langwatch_project=os.getenv("LANGWATCH_PROJECT", "ascp"),
+            langwatch_project=os.getenv("LANGWATCH_PROJECT", "layer-b-sdk"),
             langwatch_debug=str(os.getenv("LANGWATCH_DEBUG", "")).lower() in {"1", "true", "yes", "on"},
         )
 
@@ -78,6 +80,12 @@ class LayerBEngine:
 
     def list_capabilities(self) -> list[str]:
         return self.validator.list_capabilities()
+
+    def list_resources(self) -> list[str]:
+        return self.validator.list_resources()
+
+    def list_prompts(self) -> list[str]:
+        return self.validator.list_prompts()
 
     def inspect_capability(self, capability_name: str) -> dict[str, Any]:
         contract = self.validator.get_capability_contract(capability_name)
@@ -158,6 +166,54 @@ class LayerBEngine:
             "sanitized_args": result.sanitized_args,
         }
 
+    def generate_contract_candidates(self) -> list[dict[str, Any]]:
+        editor = PolicyEditor(self.policy.paths.policy_path)
+        generator = ContractCandidateGenerator(editor)
+        return [candidate.to_dict() for candidate in generator.generate_tool_candidates()]
+
+    def generate_feedback_suggestions(
+        self,
+        *,
+        event_log_path: str | Path | None = None,
+        min_occurrences: int = 2,
+    ) -> list[dict[str, Any]]:
+        source = Path(
+            event_log_path
+            or os.getenv("ASCP_LAYER_B_EVENT_LOG")
+            or "data/layer_b_events.jsonl"
+        )
+        editor = PolicyEditor(self.policy.paths.policy_path)
+        generator = IncidentFeedbackGenerator(editor, event_log_path=source)
+        return [
+            suggestion.to_dict()
+            for suggestion in generator.generate_tool_feedback_suggestions(
+                min_occurrences=min_occurrences
+            )
+        ]
+
+    def recent_security_events(
+        self,
+        *,
+        event_log_path: str | Path | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        source = Path(
+            event_log_path
+            or os.getenv("ASCP_LAYER_B_EVENT_LOG")
+            or "data/layer_b_events.jsonl"
+        )
+        if not source.exists():
+            return []
+
+        events: list[dict[str, Any]] = []
+        with source.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                raw = line.strip()
+                if not raw:
+                    continue
+                events.append(json.loads(raw))
+        return events[-limit:]
+
 
 def _load_json(value: str | None, default: Any) -> Any:
     if value is None:
@@ -173,6 +229,10 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("list", help="List registered capabilities.")
+    subparsers.add_parser("events", help="Show recent Layer B security events.")
+    subparsers.add_parser("candidates", help="Show auto-generated contract candidates.")
+    feedback_parser = subparsers.add_parser("feedback", help="Show feedback-loop contract suggestions.")
+    feedback_parser.add_argument("--min-occurrences", type=int, default=2)
 
     inspect_parser = subparsers.add_parser("inspect", help="Inspect one capability contract.")
     inspect_parser.add_argument("capability")
@@ -209,6 +269,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "list":
         print(json.dumps(engine.list_capabilities(), indent=2))
+        return 0
+
+    if args.command == "events":
+        print(json.dumps(engine.recent_security_events(), indent=2, default=str))
+        return 0
+
+    if args.command == "candidates":
+        print(json.dumps(engine.generate_contract_candidates(), indent=2, default=str))
+        return 0
+
+    if args.command == "feedback":
+        print(
+            json.dumps(
+                engine.generate_feedback_suggestions(min_occurrences=args.min_occurrences),
+                indent=2,
+                default=str,
+            )
+        )
         return 0
 
     if args.command == "inspect":

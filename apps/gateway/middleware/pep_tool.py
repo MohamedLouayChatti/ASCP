@@ -22,9 +22,11 @@ import logging
 import os
 import re
 import socket
+import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -59,14 +61,20 @@ UnknownCapabilityMode = Literal[
     "strict_block",
     "require_approval",
     "sandbox_allow",
+    "auto_allow",
     "discover_only",
 ]
 _UNKNOWN_CAPABILITY_MODES: tuple[UnknownCapabilityMode, ...] = (
     "strict_block",
     "require_approval",
     "sandbox_allow",
+    "auto_allow",
     "discover_only",
 )
+_UNKNOWN_CAPABILITY_MODE_ALIASES: dict[str, str] = {
+    "auto_allow": "sandbox_allow",
+    "allow": "sandbox_allow",
+}
 _UNKNOWN_CAPABILITY_BASELINE_MAX_BODY_CHARS = 4000
 _DANGEROUS_UNKNOWN_ARG_NAMES = frozenset(
     {
@@ -139,6 +147,36 @@ class SecurityEventObserver:
 class NoopSecurityEventObserver(SecurityEventObserver):
     def emit(self, event: dict[str, Any]) -> None:  # pragma: no cover - intentionally no-op
         _ = event
+
+
+class CompositeSecurityEventObserver(SecurityEventObserver):
+    """Dispatches Layer B events to multiple sinks."""
+
+    def __init__(self, observers: list[SecurityEventObserver]) -> None:
+        self._observers = list(observers)
+
+    def emit(self, event: dict[str, Any]) -> None:
+        for observer in self._observers:
+            try:
+                observer.emit(event)
+            except Exception:
+                logger.debug("Failed to emit Layer B event to observer %s", observer.__class__.__name__, exc_info=True)
+
+
+class JsonlSecurityEventObserver(SecurityEventObserver):
+    """Durable local audit log for Layer B decisions."""
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+        self._lock = threading.Lock()
+
+    def emit(self, event: dict[str, Any]) -> None:
+        payload = copy.deepcopy(event)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(payload, sort_keys=True, default=str)
+        with self._lock:
+            with self._path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
 
 
 class LangWatchSecurityEventObserver(SecurityEventObserver):
@@ -551,6 +589,8 @@ def _risk_weight(level: str) -> float:
 class ResolvedContract:
     contract_name: str
     contract: dict[str, Any]
+    match_type: str = "exact_name"
+    schema_hash: str | None = None
 
 
 def _normalize_schema_hash(value: Any) -> str:
@@ -562,6 +602,11 @@ def _normalize_schema_hash(value: Any) -> str:
 
 def _compute_schema_hash(schema: Any) -> str:
     return hashlib.sha256(_stringify_json(schema).encode("utf-8")).hexdigest()
+
+
+def _normalize_unknown_capability_mode(value: str) -> str:
+    normalized = str(value).strip().lower()
+    return _UNKNOWN_CAPABILITY_MODE_ALIASES.get(normalized, normalized)
 
 
 def _schema_hashes_from_match(match_cfg: dict[str, Any]) -> set[str]:
@@ -629,8 +674,9 @@ class ContractValidator:
         tool_permissions_path: str | Path,
         schemas_dir: str | Path,
         *,
-        unknown_capability_mode: UnknownCapabilityMode = "require_approval",
+        unknown_capability_mode: UnknownCapabilityMode = "auto_allow",
         security_observer: SecurityEventObserver | None = None,
+        audit_log_path: str | Path | None = None,
         langwatch_enabled: bool = True,
         langwatch_client: Any | None = None,
         langwatch_api_key: str | None = None,
@@ -638,7 +684,8 @@ class ContractValidator:
         langwatch_project: str | None = None,
         langwatch_debug: bool = False,
     ) -> None:
-        if unknown_capability_mode not in _UNKNOWN_CAPABILITY_MODES:
+        normalized_unknown_mode = _normalize_unknown_capability_mode(unknown_capability_mode)
+        if normalized_unknown_mode not in _UNKNOWN_CAPABILITY_MODES:
             expected = ", ".join(_UNKNOWN_CAPABILITY_MODES)
             raise ValueError(
                 "unknown_capability_mode must be one of "
@@ -646,7 +693,7 @@ class ContractValidator:
             )
         self._permissions_path = Path(tool_permissions_path)
         self._schemas_dir = Path(schemas_dir)
-        self._unknown_capability_mode = unknown_capability_mode
+        self._unknown_capability_mode = normalized_unknown_mode
         self._raw_policy: dict[str, Any] = {}
         self._capability_permissions: dict[str, Any] = {}
         self._resource_permissions: dict[str, Any] = {}
@@ -658,17 +705,27 @@ class ContractValidator:
         self._loaded_mtime_ns: int | None = None
         if security_observer is not None:
             self._security_observer = security_observer
-        elif langwatch_enabled:
-            self._security_observer = LangWatchSecurityEventObserver(
-                enabled=True,
-                client=langwatch_client,
-                api_key=langwatch_api_key,
-                endpoint_url=langwatch_endpoint,
-                project=langwatch_project,
-                debug=langwatch_debug,
-            )
         else:
-            self._security_observer = NoopSecurityEventObserver()
+            observers: list[SecurityEventObserver] = []
+            if audit_log_path:
+                observers.append(JsonlSecurityEventObserver(audit_log_path))
+            if langwatch_enabled:
+                observers.append(
+                    LangWatchSecurityEventObserver(
+                        enabled=True,
+                        client=langwatch_client,
+                        api_key=langwatch_api_key,
+                        endpoint_url=langwatch_endpoint,
+                        project=langwatch_project,
+                        debug=langwatch_debug,
+                    )
+                )
+            if not observers:
+                self._security_observer = NoopSecurityEventObserver()
+            elif len(observers) == 1:
+                self._security_observer = observers[0]
+            else:
+                self._security_observer = CompositeSecurityEventObserver(observers)
         self._load()
 
     def _emit_security_event(
@@ -681,9 +738,17 @@ class ContractValidator:
         agent_id: str,
         framework: str,
         invocation_context: dict[str, Any] | None = None,
+        decision_metadata: dict[str, Any] | None = None,
     ) -> None:
+        trace = copy.deepcopy(decision_metadata or {})
+        invocation_copy = copy.deepcopy(invocation_context or {})
+        schema_hash = _resolve_invocation_schema_hash(invocation_copy)
+        if schema_hash is not None and "input_schema_hash" not in trace:
+            trace["input_schema_hash"] = schema_hash
         self._security_observer.emit(
             {
+                "event_id": str(uuid.uuid4()),
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
                 "component_type": component_type,
                 "component_name": component_name,
                 "decision": result.decision.value,
@@ -691,10 +756,12 @@ class ContractValidator:
                 "details": result.details,
                 "violations": list(result.violations),
                 "approval_token_issued": bool(result.approval_token),
+                "operation_fingerprint": _approval_fingerprint(component_type, component_name, args),
                 "agent_id": agent_id,
                 "framework": framework,
                 "args": copy.deepcopy(args),
-                "invocation_context": copy.deepcopy(invocation_context or {}),
+                "invocation_context": invocation_copy,
+                "trace": trace,
             }
         )
 
@@ -708,6 +775,7 @@ class ContractValidator:
         agent_id: str,
         framework: str,
         invocation_context: dict[str, Any] | None = None,
+        decision_metadata: dict[str, Any] | None = None,
     ) -> ContractResult:
         self._emit_security_event(
             component_type=component_type,
@@ -717,6 +785,7 @@ class ContractValidator:
             agent_id=agent_id,
             framework=framework,
             invocation_context=invocation_context,
+            decision_metadata=decision_metadata,
         )
         return result
 
@@ -730,6 +799,7 @@ class ContractValidator:
         agent_id: str,
         framework: str,
         invocation_context: dict[str, Any] | None = None,
+        decision_metadata: dict[str, Any] | None = None,
     ) -> ContractResult:
         return self._finalize_result(
             component_type=component_type,
@@ -739,6 +809,7 @@ class ContractValidator:
             agent_id=agent_id,
             framework=framework,
             invocation_context=invocation_context,
+            decision_metadata=decision_metadata,
         )
 
     def _block_result(
@@ -768,6 +839,7 @@ class ContractValidator:
         checks: list[Callable[[], ContractResult | None]],
         success_result: ContractResult,
         invocation_context: dict[str, Any] | None = None,
+        decision_metadata: dict[str, Any] | None = None,
     ) -> ContractResult:
         for check in checks:
             result = check()
@@ -780,6 +852,7 @@ class ContractValidator:
                     agent_id=agent_id,
                     framework=framework,
                     invocation_context=invocation_context,
+                    decision_metadata=decision_metadata,
                 )
         return self._finalize_component_result(
             component_type=component_type,
@@ -789,6 +862,7 @@ class ContractValidator:
             agent_id=agent_id,
             framework=framework,
             invocation_context=invocation_context,
+            decision_metadata=decision_metadata,
         )
 
     def _get_capability_contracts(self, policy: dict[str, Any]) -> dict[str, Any]:
@@ -948,6 +1022,7 @@ class ContractValidator:
             return ResolvedContract(
                 contract_name=tool_name,
                 contract=self._merged_contract("tool", tool_name, exact_contract),
+                match_type="exact_name",
             )
 
         schema_hash = _resolve_invocation_schema_hash(invocation_context)
@@ -962,6 +1037,8 @@ class ContractValidator:
                     return ResolvedContract(
                         contract_name=name,
                         contract=self._merged_contract("tool", name, contract),
+                        match_type="argument_schema_hash",
+                        schema_hash=schema_hash,
                     )
 
         for name, contract in self._capability_permissions.items():
@@ -971,6 +1048,7 @@ class ContractValidator:
                 return ResolvedContract(
                     contract_name=name,
                     contract=self._merged_contract("tool", name, contract),
+                    match_type="catch_all_default",
                 )
 
         return None
@@ -1790,6 +1868,7 @@ class ContractValidator:
                     agent_id=agent_id,
                     framework=framework,
                     invocation_context=invocation_context,
+                    decision_metadata={"policy_match": "unknown_baseline"},
                 )
             return self._finalize_component_result(
                 component_type=component_type,
@@ -1803,9 +1882,16 @@ class ContractValidator:
                 agent_id=agent_id,
                 framework=framework,
                 invocation_context=invocation_context,
+                decision_metadata={"policy_match": "unknown_capability"},
             )
 
         contract = resolved_contract.contract
+        decision_metadata = {
+            "policy_match": resolved_contract.match_type,
+            "contract_name": resolved_contract.contract_name,
+        }
+        if resolved_contract.schema_hash is not None:
+            decision_metadata["contract_schema_hash"] = resolved_contract.schema_hash
         schema_result = self._validate_schema(
             "tool",
             resolved_contract.contract_name,
@@ -1851,6 +1937,7 @@ class ContractValidator:
                 ),
             ],
             success_result=self._allow_result(tool_name, args),
+            decision_metadata=decision_metadata,
         )
 
     def validate_capability_call(
@@ -1900,6 +1987,7 @@ class ContractValidator:
                 ),
                 agent_id=agent_id,
                 framework=framework,
+                decision_metadata={"policy_match": "resource_unregistered"},
             )
 
         matched_name = resolved_contract.contract_name
@@ -1941,6 +2029,10 @@ class ContractValidator:
                 ),
             ],
             success_result=self._allow_result(matched_name, payload),
+            decision_metadata={
+                "policy_match": resolved_contract.match_type,
+                "contract_name": matched_name,
+            },
         )
 
     def validate_prompt_get(
@@ -1967,6 +2059,7 @@ class ContractValidator:
                 ),
                 agent_id=agent_id,
                 framework=framework,
+                decision_metadata={"policy_match": "prompt_unregistered"},
             )
 
         contract = self._merged_contract("prompt", prompt_name, self._prompt_permissions[prompt_name])
@@ -1996,6 +2089,10 @@ class ContractValidator:
                 ),
             ],
             success_result=self._allow_result(prompt_name, args),
+            decision_metadata={
+                "policy_match": "exact_name",
+                "contract_name": prompt_name,
+            },
         )
 
     def sanitize_output(self, tool_name: str, output: Any) -> Any:
@@ -2027,6 +2124,8 @@ class ContractValidator:
         logger.debug("Sanitized output for %s", tool_name)
         self._security_observer.emit(
             {
+                "event_id": str(uuid.uuid4()),
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
                 "component_type": ComponentType.TOOL.value,
                 "component_name": tool_name,
                 "decision": ContractDecision.ALLOW.value,
@@ -2034,10 +2133,15 @@ class ContractValidator:
                 "details": "Output postconditions applied.",
                 "violations": [],
                 "approval_token_issued": False,
+                "operation_fingerprint": _approval_fingerprint(ComponentType.TOOL.value, tool_name, {}),
                 "agent_id": "postcondition",
                 "framework": "layer_b",
                 "args": {},
                 "invocation_context": {},
+                "trace": {
+                    "policy_match": "postcondition",
+                    "contract_name": tool_name,
+                },
             }
         )
         return sanitized
@@ -2110,10 +2214,12 @@ class ContractValidator:
 
 
 __all__ = [
+    "CompositeSecurityEventObserver",
     "ComponentType",
     "ContractDecision",
     "ContractResult",
     "ContractValidator",
+    "JsonlSecurityEventObserver",
     "LangWatchSecurityEventObserver",
     "NoopSecurityEventObserver",
     "PermissionScope",

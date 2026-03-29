@@ -32,6 +32,7 @@ class ASCPSettings(BaseSettings):
     telemetry_path: Path = Path("logs/telemetry.jsonl")
     db_url: str = "sqlite+aiosqlite:///data/ascp.db"
     observed_registry_path: Path = Path("data/observed_components.json")
+    layer_b_event_log_path: Path = Path("data/layer_b_events.jsonl")
 
     # Policy paths
     policy_path: Path = Path("policy/policies.yaml")
@@ -60,14 +61,15 @@ class ASCPSettings(BaseSettings):
         "strict_block",
         "require_approval",
         "sandbox_allow",
+        "auto_allow",
         "discover_only",
-    ] = "require_approval"
+    ] = "auto_allow"
 
     # LangWatch
     langwatch_enabled: bool = True
     langwatch_api_key: str = os.getenv("LANGWATCH_KEY", "")
     langwatch_endpoint: str = "https://app.langwatch.ai"
-    langwatch_project: str = "ascp"
+    langwatch_project: str = "layer-b-sdk"
     langwatch_debug: bool = False
 
     @property

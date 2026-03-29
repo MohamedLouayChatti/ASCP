@@ -12,7 +12,7 @@ from apps.gateway.middleware.pep_tool import ContractDecision, ContractValidator
 def _make_validator(
     name: str,
     *,
-    unknown_capability_mode: str = "require_approval",
+    unknown_capability_mode: str = "auto_allow",
 ) -> ContractValidator:
     tmp_path = Path(".pytest_unknown_capability_modes") / f"{name}-{uuid4().hex}"
     schemas_dir = tmp_path / "schemas"
@@ -32,14 +32,14 @@ def _make_validator(
     )
 
 
-def test_unknown_capability_requires_approval_by_default() -> None:
+def test_unknown_capability_auto_allows_safe_args_by_default() -> None:
     validator = _make_validator("default")
 
     result = validator.validate_call("unknown_tool", {"query": "hello"})
 
-    assert result.decision == ContractDecision.REQUIRE_APPROVAL
-    assert result.reason_code == "APPROVAL_REQUIRED"
-    assert result.approval_token
+    assert result.decision == ContractDecision.ALLOW
+    assert result.reason_code == "UNKNOWN_CAPABILITY_SANDBOX_ALLOWED"
+    assert result.sanitized_args == {"query": "hello"}
 
 
 def test_unknown_capability_can_be_strictly_blocked() -> None:
@@ -53,6 +53,16 @@ def test_unknown_capability_can_be_strictly_blocked() -> None:
 
 def test_unknown_capability_can_be_allowed_in_sandbox_mode() -> None:
     validator = _make_validator("sandbox-allow", unknown_capability_mode="sandbox_allow")
+
+    result = validator.validate_call("unknown_tool", {"query": "hello"})
+
+    assert result.decision == ContractDecision.ALLOW
+    assert result.reason_code == "UNKNOWN_CAPABILITY_SANDBOX_ALLOWED"
+    assert result.sanitized_args == {"query": "hello"}
+
+
+def test_unknown_capability_auto_allow_alias_maps_to_sandbox_allow() -> None:
+    validator = _make_validator("auto-allow", unknown_capability_mode="auto_allow")
 
     result = validator.validate_call("unknown_tool", {"query": "hello"})
 

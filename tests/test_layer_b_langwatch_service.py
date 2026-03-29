@@ -52,6 +52,7 @@ def test_real_langwatch_service_smoke(tmp_path: Path) -> None:
     validator = ContractValidator(
         policy_path,
         schemas_dir,
+        unknown_capability_mode="require_approval",
         langwatch_enabled=True,
         langwatch_api_key=api_key,
         langwatch_endpoint=os.getenv("LANGWATCH_ENDPOINT"),
