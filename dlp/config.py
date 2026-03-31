@@ -124,7 +124,7 @@ class DLPConfig:
             ],
             canary_labels=["api_credential_mock", "db_password", "sys_admin_token"],
             content_keys=list(_DEFAULT_CONTENT_KEYS),
-            surface_overrides=dict(_DEFAULT_SURFACE_OVERRIDES),
+            surface_overrides={k: dict(v) for k, v in _DEFAULT_SURFACE_OVERRIDES.items()},
             # New features default to off — existing deployments unaffected
             enable_entropy=False,
             enable_luhn_validation=True,   # safe to always validate CC patterns

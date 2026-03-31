@@ -125,7 +125,7 @@ class DLPScanner:
         if self.fingerprinter is not None:
             fingerprint_hits = self.fingerprinter.scan(text, surface)
             if fingerprint_hits:
-                current_action = max(current_action, self.config.canary_action)
+                current_action = max(current_action, DLPAction.ESCALATE)
 
         # 6. Compute output
         redacted = PatternEngine.apply_redactions(text, all_redactions)
@@ -219,7 +219,7 @@ class DLPScanner:
         if canary_hits:
             current_action = max(current_action, self.config.canary_action)
         if fingerprint_hits:
-            current_action = max(current_action, self.config.canary_action)
+            current_action = max(current_action, DLPAction.ESCALATE)
         for m in secret_matches + pii_matches:
             current_action = max(current_action, m.action)
 

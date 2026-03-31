@@ -58,6 +58,7 @@ class DocumentFingerprinter:
         self.config = config
         # OrderedDict preserves insertion order for deterministic LRU eviction
         self._store: OrderedDict[str, _DocEntry] = OrderedDict()
+        self._doc_counter: int = 0
 
     # ── Eviction ─────────────────────────────────────────────────────────────
 
@@ -88,8 +89,9 @@ class DocumentFingerprinter:
         to the source. Expired entries are pruned before insertion.
         """
         self._evict_expired()
-        for idx, doc in enumerate(docs):
-            doc_id = f"doc_{idx}"
+        for doc in docs:
+            doc_id = f"doc_{self._doc_counter}"
+            self._doc_counter += 1
             # Extract text following the same priority order as canary injection
             text = next(
                 (str(doc[k]) for k in content_keys if k in doc),
