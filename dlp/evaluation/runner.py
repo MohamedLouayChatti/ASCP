@@ -8,7 +8,7 @@ import time
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from dlp import init as init_dlp, scan_output, scan_tool_args, scan_tool_result
+from dlp import init as init_dlp, scan_output, scan_tool_args, scan_tool_result, inject_canaries_into_context
 from dlp.config import DLPConfig
 from dlp.models import DLPAction, EnforcementDecision
 
@@ -45,21 +45,36 @@ class Evaluator:
             data = json.load(f)
         return [TestCase(**case) for case in data.get("test_cases", [])]
 
+    def _replace_canary(self, payload: Any, canary_token: str) -> Any:
+        if isinstance(payload, str):
+            return payload.replace("{canary_token}", canary_token)
+        elif isinstance(payload, dict):
+            return {k: self._replace_canary(v, canary_token) for k, v in payload.items()}
+        elif isinstance(payload, list):
+            return [self._replace_canary(v, canary_token) for v in payload]
+        return payload
+
     def run_case(self, case: TestCase, config_type: str, config: DLPConfig) -> EvaluationResult:
         # Initialize DLP singleton for this run
         init_dlp(config)
+
+        # Inject canaries to make semantic analysis active and get a valid token
+        _, token, _ = inject_canaries_into_context([{"text": "mock context document"}])
+
+        # Deep replace the {canary_token} in the payload if it exists
+        payload = self._replace_canary(case.input_payload, token if token else "fallback_token")
 
         start_time = time.time()
         
         try:
             if case.surface == "OUTPUT":
-                decision: EnforcementDecision = scan_output(case.input_payload)
+                decision: EnforcementDecision = scan_output(payload)
             elif case.surface == "TOOL_ARGS":
                 # Assuming input_payload is a dict of args, tool_name can be a dummy like "eval_tool"
-                decision = scan_tool_args("eval_tool", case.input_payload)
+                decision = scan_tool_args("eval_tool", payload)
             elif case.surface == "TOOL_RESULT":
                 # Assuming input_payload is result_data, tool_name a dummy "eval_tool"
-                decision = scan_tool_result("eval_tool", case.input_payload)
+                decision = scan_tool_result("eval_tool", payload)
             else:
                 raise ValueError(f"Unknown surface: {case.surface}")
         except Exception as e:
@@ -82,13 +97,21 @@ class Evaluator:
              actual_action_str = "ESCALATE"
 
         # Compare
-        passed = (actual_action_str == case.expected_action)
         
         # Check if the context analyzer successfully mitigated the ambiguous cases
-        # In a real environment, you'd check expected_violations here against `decision.escalation_event` or internals.
         violations = []
-        if decision.escalation_event and "violations" in decision.escalation_event:
-             violations = [v.get("type", "unknown") for v in decision.escalation_event["violations"]]
+        if decision.dlp_result:
+            if decision.dlp_result.canary_hits:
+                violations.append("canary")
+            if decision.dlp_result.secret_matches:
+                violations.append("secret")
+            if decision.dlp_result.pii_matches:
+                violations.append("pii")
+
+        # Compare action and expected violations (if needed, but mainly action for now)
+        # We can say it passed if action matches AND (for negative tests) if all expected violations are in the detected list
+        # Though the original test only checks expected_action. We'll improve expected matching:
+        passed = (actual_action_str == case.expected_action)
 
         return EvaluationResult(
             case_id=case.id,
