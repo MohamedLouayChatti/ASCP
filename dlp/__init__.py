@@ -1,9 +1,8 @@
 import json
 from pathlib import Path
-from typing import Any
-
+from typing import Any, Union
 from .models import ScanSurface, EnforcementDecision, DLPResult
-from .config import load_dlp_config
+from .config import load_dlp_config, DLPConfig
 from .canary import CanaryEngine
 from .scanner import DLPScanner
 from .enforcer import PolicyEnforcer
@@ -13,17 +12,22 @@ _enforcer: PolicyEnforcer | None = None
 _canary_engine: CanaryEngine | None = None
 
 
-def init(config_path: Path | None = None) -> None:
+def init(config: Union[Path, DLPConfig, None] = None) -> None:
     """
-    Initialise the DLP module with a given policy file.
-    If config_path is None or the file does not exist, built-in safe defaults are used.
+    Initialise the DLP module with a given policy file or DLPConfig object.
+    If config is None or the file does not exist, built-in safe defaults are used.
     """
     global _scanner, _enforcer, _canary_engine
-    path = config_path if config_path is not None else Path("nonexistent_default.yaml")
-    config = load_dlp_config(path)
-    _canary_engine = CanaryEngine(config)
-    _scanner = DLPScanner(config, _canary_engine)
-    _enforcer = PolicyEnforcer(config)
+    
+    if isinstance(config, DLPConfig):
+         loaded_config = config
+    else:
+         path = config if config is not None else Path("nonexistent_default.yaml")
+         loaded_config = load_dlp_config(path)
+         
+    _canary_engine = CanaryEngine(loaded_config)
+    _scanner = DLPScanner(loaded_config, _canary_engine)
+    _enforcer = PolicyEnforcer(loaded_config)
 
 
 def _ensure_initialized() -> None:

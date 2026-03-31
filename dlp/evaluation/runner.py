@@ -45,26 +45,6 @@ class Evaluator:
             data = json.load(f)
         return [TestCase(**case) for case in data.get("test_cases", [])]
 
-    def get_default_config(self) -> DLPConfig:
-        config = DLPConfig.defaults()
-        # Ensure heavy features are off
-        config.enable_entropy = False
-        config.enable_ner = False
-        config.enable_fingerprinting = False
-        config.enable_context_analysis = False
-        # But we need structured scan to be true to test dictionary payloads
-        config.enable_structured_scan = True 
-        return config
-
-    def get_fully_featured_config(self) -> DLPConfig:
-        config = DLPConfig.defaults()
-        config.enable_entropy = True
-        config.enable_ner = True
-        config.enable_fingerprinting = True
-        config.enable_context_analysis = True
-        config.enable_structured_scan = True
-        return config
-
     def run_case(self, case: TestCase, config_type: str, config: DLPConfig) -> EvaluationResult:
         # Initialize DLP singleton for this run
         init_dlp(config)
@@ -75,9 +55,11 @@ class Evaluator:
             if case.surface == "OUTPUT":
                 decision: EnforcementDecision = scan_output(case.input_payload)
             elif case.surface == "TOOL_ARGS":
-                decision = scan_tool_args(case.input_payload)
+                # Assuming input_payload is a dict of args, tool_name can be a dummy like "eval_tool"
+                decision = scan_tool_args("eval_tool", case.input_payload)
             elif case.surface == "TOOL_RESULT":
-                decision = scan_tool_result(case.input_payload)
+                # Assuming input_payload is result_data, tool_name a dummy "eval_tool"
+                decision = scan_tool_result("eval_tool", case.input_payload)
             else:
                 raise ValueError(f"Unknown surface: {case.surface}")
         except Exception as e:
@@ -85,7 +67,9 @@ class Evaluator:
             decision = EnforcementDecision(
                 action=DLPAction.ALLOW,
                 clean_text=case.input_payload,
-                message=str(e),
+                violations=[],
+                should_block=False,
+                safe_message=str(e),
                 should_escalate=False,
                 escalation_event=None
             )
@@ -117,24 +101,25 @@ class Evaluator:
             latency_ms=latency,
             violations=violations,
             clean_text_or_payload=decision.clean_text,
-            message=decision.message or ""
+            message=decision.safe_message or ""
         )
 
-    def run_all(self) -> List[EvaluationResult]:
+    def run_all(self, configs: Dict[str, DLPConfig] = None) -> List[EvaluationResult]:
+        """
+        Runs the test corpus against a set of configurations.
+        configs: A dictionary of configuration name to DLPConfig object.
+                 If None, uses a default empty configuration.
+        """
+        if configs is None:
+            config = DLPConfig.defaults()
+            config.enable_structured_scan = True
+            configs = {"DEFAULT": config}
+
         results = []
-        
-        # Run Default
-        default_config = self.get_default_config()
-        for case in self.cases:
-            res = self.run_case(case, "DEFAULT", default_config)
-            results.append(res)
-            
-        # Run Fully Featured
-        # Note: running NER config might take a long time on the first pass
-        all_config = self.get_fully_featured_config()
-        for case in self.cases:
-            res = self.run_case(case, "ALL_FEATURES", all_config)
-            results.append(res)
+        for config_name, config in configs.items():
+            for case in self.cases:
+                res = self.run_case(case, config_name, config)
+                results.append(res)
             
         return results
 
@@ -142,7 +127,18 @@ if __name__ == "__main__":
     import os
     corpus_path = os.path.join(os.path.dirname(__file__), "corpus.json")
     evaluator = Evaluator(corpus_path)
-    results = evaluator.run_all()
+    
+    config_default = DLPConfig.defaults()
+    config_default.enable_structured_scan = True
+    
+    config_all = DLPConfig.defaults()
+    config_all.enable_entropy = True
+    config_all.enable_ner = True
+    config_all.enable_fingerprinting = True
+    config_all.enable_context_analysis = True
+    config_all.enable_structured_scan = True
+    
+    results = evaluator.run_all({"DEFAULT": config_default, "ALL_FEATURES": config_all})
     failed = [r for r in results if not r.passed]
     print(f"Total: {len(results)}, Passed: {len(results)-len(failed)}, Failed: {len(failed)}")
     for f in failed:
