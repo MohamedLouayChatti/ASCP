@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from uuid import uuid4
@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 import yaml
 
-from apps.gateway.middleware.pep_tool import ContractDecision, ContractValidator
+from layerb import ContractDecision, ContractValidator
 
 
 def _make_validator(
@@ -28,7 +28,6 @@ def _make_validator(
         policy_path,
         schemas_dir,
         unknown_capability_mode=unknown_capability_mode,
-        langwatch_enabled=False,
     )
 
 
@@ -170,3 +169,5 @@ def test_unknown_capability_approval_token_round_trip_still_works() -> None:
 def test_invalid_unknown_capability_mode_is_rejected() -> None:
     with pytest.raises(ValueError, match="unknown_capability_mode"):
         _make_validator("invalid-mode", unknown_capability_mode="not-a-mode")
+
+

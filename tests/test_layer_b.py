@@ -1,11 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-import layer_b
-from layer_b import ContractDecision, LayerBEngine
+import layerb
+import layerb.engine as layerb_engine
+from layerb import ContractDecision, LayerBEngine
 
 
 class DummyValidator:
@@ -35,7 +37,7 @@ class DummyValidator:
         return {"type": "object", "properties": {"path": {"type": "string"}}}
 
     def validate_capability_call(self, capability_name: str, arguments: dict[str, Any], **_: Any):
-        return layer_b.ContractResult(
+        return layerb_engine.ContractResult(
             decision=ContractDecision.ALLOW,
             tool_name=capability_name,
             reason_code="ok",
@@ -49,12 +51,12 @@ class DummyValidator:
 def test_load_json_uses_default_when_missing() -> None:
     """Confirms helper returns the provided default when CLI arg is absent."""
     default_value = {"k": "v"}
-    assert layer_b._load_json(None, default_value) == default_value
+    assert layerb_engine._load_json(None, default_value) == default_value
 
 
 def test_load_json_parses_valid_json() -> None:
     """Confirms helper parses JSON payload strings used by CLI flags."""
-    parsed = layer_b._load_json('{"a": 1, "b": [2]}', {})
+    parsed = layerb_engine._load_json('{"a": 1, "b": [2]}', {})
     assert parsed == {"a": 1, "b": [2]}
 
 
@@ -81,10 +83,10 @@ def test_engine_uses_policy_loader_when_validator_missing(monkeypatch: pytest.Mo
     """Ensures constructor can be tested without real policy/schema files by stubbing loader."""
     dummy = DummyValidator()
 
-    def fake_load(self: layer_b.LayerBPolicy) -> DummyValidator:
+    def fake_load(self: layerb_engine.LayerBPolicy) -> DummyValidator:
         return dummy
 
-    monkeypatch.setattr(layer_b.LayerBPolicy, "load", fake_load)
+    monkeypatch.setattr(layerb_engine.LayerBPolicy, "load", fake_load)
 
     engine = LayerBEngine(validator=None)
     assert engine.validator is dummy
@@ -147,3 +149,24 @@ def test_validate_capability_allows_identity_override() -> None:
 
     assert validator.last_kwargs["agent_id"] == "override-agent"
     assert validator.last_kwargs["framework"] == "override-fw"
+
+
+def test_engine_describe_paths_exposes_sdk_event_log_path() -> None:
+    engine = LayerBEngine(
+        validator=DummyValidator(),
+        event_log_path="logs/custom/layer_b_events.jsonl",
+    )
+
+    paths = engine.describe_paths()
+
+    assert Path(paths["event_log_path"]) == Path("logs/custom/layer_b_events.jsonl")
+
+
+def test_sdk_package_exposes_bundled_default_paths() -> None:
+    engine = layerb.LayerBEngine(validator=DummyValidator())
+
+    paths = engine.describe_paths()
+
+    assert Path(paths["base_policy_path"]).name == "default_tool_permissions.yaml"
+    assert Path(paths["schemas_dir"]).name == "schemas"
+

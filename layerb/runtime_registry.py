@@ -1,4 +1,4 @@
-"""
+﻿"""
 Runtime registry for framework-wrapped tools.
 """
 

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from uuid import uuid4
@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 import yaml
 
-from apps.gateway.middleware.pep_tool import (
+from layerb import (
     ContractDecision,
     ContractValidator,
     PolicyValidationError,
@@ -40,7 +40,6 @@ def _make_validator(
         schemas_dir,
         base_policy_path=base_policy_path,
         unknown_capability_mode=unknown_capability_mode,
-        langwatch_enabled=False,
     )
 
 
@@ -179,3 +178,5 @@ def test_duplicate_inferred_family_matches_are_rejected() -> None:
                 },
             },
         )
+
+

@@ -1,5 +1,5 @@
-"""
-Layer B â€” C1 Typed Tool Security Contracts.
+﻿"""
+Layer B Ã¢â‚¬â€ C1 Typed Tool Security Contracts.
 
 Runtime enforcement layer that validates every LLM tool call before execution.
 Treats all tool calls as security-critical regardless of model intent.
@@ -37,7 +37,7 @@ try:
 except ImportError:  # pragma: no cover
     yaml = None  # type: ignore[assignment]
 
-from apps.adapters.runtime_registry import get_runtime_tool
+from layerb.runtime_registry import get_runtime_tool
 
 try:
     from jsonschema import ValidationError
@@ -194,7 +194,7 @@ class CompositeSecurityEventObserver(SecurityEventObserver):
 
 
 class JsonlSecurityEventObserver(SecurityEventObserver):
-    """Durable local audit log for Layer B decisions."""
+    """Durable local event log for Layer B decisions."""
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
@@ -207,95 +207,6 @@ class JsonlSecurityEventObserver(SecurityEventObserver):
         with self._lock:
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
-
-
-class LangWatchSecurityEventObserver(SecurityEventObserver):
-    """Minimal LangWatch adapter used only for Layer B decision assertions."""
-
-    def __init__(
-        self,
-        *,
-        enabled: bool = True,
-        client: Any | None = None,
-        api_key: str | None = None,
-        endpoint_url: str | None = None,
-        project: str | None = None,
-        debug: bool = False,
-    ) -> None:
-        self._enabled = enabled
-        self._client = client
-        self._project = project or os.getenv("LANGWATCH_PROJECT", "ascp")
-        if not self._enabled:
-            return
-        if self._client is None:
-            try:
-                import langwatch  # type: ignore
-
-                resolved_key = api_key or os.getenv("LANGWATCH_KEY") or os.getenv("LANGWATCH_API_KEY")
-                if not resolved_key:
-                    self._enabled = False
-                    return
-                langwatch.setup(
-                    api_key=resolved_key,
-                    endpoint_url=endpoint_url,
-                    base_attributes={"project": self._project} if self._project else None,
-                    debug=debug,
-                )
-                self._client = langwatch
-            except Exception:
-                self._enabled = False
-
-    def emit(self, event: dict[str, Any]) -> None:
-        if not self._enabled or self._client is None:
-            return
-
-        try:
-            if hasattr(self._client, "track_event"):
-                self._client.track_event("layer_b.contract_decision", event)
-                return
-            if hasattr(self._client, "log_event"):
-                self._client.log_event("layer_b.contract_decision", event)
-                return
-            if hasattr(self._client, "capture"):
-                self._client.capture("layer_b.contract_decision", event)
-                return
-
-            if hasattr(self._client, "trace") and hasattr(self._client, "span"):
-                output_payload = {
-                    "decision": event.get("decision"),
-                    "reason_code": event.get("reason_code"),
-                    "details": event.get("details", ""),
-                    "violations": event.get("violations", []),
-                }
-                metadata = {
-                    "component_type": event.get("component_type", "tool"),
-                    "component_name": event.get("component_name", "unknown"),
-                    "agent_id": event.get("agent_id", "unknown"),
-                    "framework": event.get("framework", "custom"),
-                    "approval_token_issued": bool(event.get("approval_token_issued", False)),
-                }
-
-                with self._client.trace(
-                    name="layer_b.contract_decision",
-                    type="guardrail",
-                    metadata=metadata,
-                    input=event.get("args", {}),
-                    output=output_payload,
-                ) as trace:
-                    with self._client.span(
-                        trace=trace,
-                        name=str(event.get("component_name", "layer_b")),
-                        type="guardrail",
-                        input=event.get("args", {}),
-                        output=output_payload,
-                        params={
-                            "project": self._project,
-                            "invocation_context": event.get("invocation_context", {}),
-                        },
-                    ):
-                        return
-        except Exception:
-            logger.debug("Failed to emit Layer B event to LangWatch", exc_info=True)
 
 
 def _stringify_json(value: Any) -> str:
@@ -820,13 +731,8 @@ class ContractValidator:
         base_policy_path: str | Path | None = None,
         unknown_capability_mode: UnknownCapabilityMode = "auto_allow",
         security_observer: SecurityEventObserver | None = None,
+        event_log_path: str | Path | None = None,
         audit_log_path: str | Path | None = None,
-        langwatch_enabled: bool = True,
-        langwatch_client: Any | None = None,
-        langwatch_api_key: str | None = None,
-        langwatch_endpoint: str | None = None,
-        langwatch_project: str | None = None,
-        langwatch_debug: bool = False,
     ) -> None:
         normalized_unknown_mode = _normalize_unknown_capability_mode(unknown_capability_mode)
         if normalized_unknown_mode not in _UNKNOWN_CAPABILITY_MODES:
@@ -848,23 +754,13 @@ class ContractValidator:
         self._schemas: dict[tuple[str, str], Any] = {}
         self._pending_approvals: dict[str, dict[str, Any]] = {}
         self._loaded_mtimes_ns: tuple[int | None, int | None] | None = None
+        self._event_log_path = Path(event_log_path or audit_log_path) if (event_log_path or audit_log_path) else None
         if security_observer is not None:
             self._security_observer = security_observer
         else:
             observers: list[SecurityEventObserver] = []
-            if audit_log_path:
-                observers.append(JsonlSecurityEventObserver(audit_log_path))
-            if langwatch_enabled:
-                observers.append(
-                    LangWatchSecurityEventObserver(
-                        enabled=True,
-                        client=langwatch_client,
-                        api_key=langwatch_api_key,
-                        endpoint_url=langwatch_endpoint,
-                        project=langwatch_project,
-                        debug=langwatch_debug,
-                    )
-                )
+            if self._event_log_path is not None:
+                observers.append(JsonlSecurityEventObserver(self._event_log_path))
             if not observers:
                 self._security_observer = NoopSecurityEventObserver()
             elif len(observers) == 1:
@@ -2395,6 +2291,10 @@ class ContractValidator:
         schema = self._schemas.get((kind, name))
         return copy.deepcopy(schema) if schema is not None else None
 
+    @property
+    def event_log_path(self) -> Path | None:
+        return Path(self._event_log_path) if self._event_log_path is not None else None
+
     def get_capability_schema(self, capability_name: str) -> dict[str, Any] | None:
         return self.get_schema("capability", capability_name)
 
@@ -2416,7 +2316,6 @@ __all__ = [
     "ContractResult",
     "ContractValidator",
     "JsonlSecurityEventObserver",
-    "LangWatchSecurityEventObserver",
     "NoopSecurityEventObserver",
     "PermissionScope",
     "PolicyValidationError",
@@ -2426,3 +2325,4 @@ __all__ = [
     "_check_path_traversal",
     "_check_sql",
 ]
+

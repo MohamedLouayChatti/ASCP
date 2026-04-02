@@ -1,4 +1,4 @@
-"""
+﻿"""
 Incident-driven contract refinement suggestions for Layer B.
 """
 
@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from apps.adapters.runtime_registry import list_runtime_tools
-from apps.gateway.policies.editor import PolicyEditor
+from layerb.runtime_registry import list_runtime_tools
+from layerb.policies.editor import PolicyEditor
 
 
 FeedbackConfidence = Literal["low", "medium", "high"]
@@ -289,3 +289,6 @@ __all__ = [
     "ContractFeedbackSuggestion",
     "IncidentFeedbackGenerator",
 ]
+
+
+

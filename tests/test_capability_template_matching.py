@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 import yaml
 
-from apps.gateway.middleware.pep_tool import (
+from layerb import (
     ContractDecision,
     ContractValidator,
     PolicyValidationError,
@@ -37,7 +37,6 @@ def _make_validator(
         policy_path,
         schemas_dir,
         unknown_capability_mode=unknown_capability_mode,
-        langwatch_enabled=False,
     )
 
 
@@ -190,3 +189,5 @@ def test_multiple_catch_all_matches_are_rejected() -> None:
 
     with pytest.raises(PolicyValidationError, match="Only one catch-all capability is allowed"):
         _make_validator("duplicate-catch-all", policy)
+
+

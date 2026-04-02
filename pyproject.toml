@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ascp"
+name = "layerb"
 version = "0.1.0"
-description = "Security SDK for tool-using LLM agents with Layer B typed capability contracts and MCP integration."
+description = "Layer B SDK for typed capability contracts and policy enforcement for tool-using LLM agents."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -36,7 +36,6 @@ dependencies = [
     "mcp>=1.26.0",
     "opentelemetry-api>=1.28.0",
     "opentelemetry-sdk>=1.28.0",
-    "langwatch>=0.3.12",
     "pytest-cov>=7.1.0",
 ]
 
@@ -74,11 +73,14 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --cov=ascp --cov=apps --cov=security --cov=eval --cov-report=term-missing"
+addopts = "-v --cov=layerb --cov-report=term-missing"
 
 [tool.hatch.build.targets.wheel]
-packages = ["apps", "security", "eval"]
-include = ["ascp.py", "layer_b.py"]
+packages = ["layerb"]
+include = [
+    "layerb/policy/*.yaml",
+    "layerb/schemas/*.json",
+]
 
 [tool.hatch.metadata]
 allow-direct-references = true

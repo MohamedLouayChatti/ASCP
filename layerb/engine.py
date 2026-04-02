@@ -1,6 +1,4 @@
-"""
-Standalone Layer B surface for typed capability security contracts.
-"""
+﻿"""SDK-facing Layer B surface for typed capability security contracts."""
 
 from __future__ import annotations
 
@@ -11,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from apps.gateway.middleware.pep_tool import (
+from layerb.validator import (
     ComponentType,
     ContractDecision,
     ContractResult,
@@ -20,19 +18,33 @@ from apps.gateway.middleware.pep_tool import (
     PolicyValidationError,
     RiskLevel,
 )
-from apps.gateway.policies import ContractCandidateGenerator, IncidentFeedbackGenerator, PolicyEditor
+from layerb.policies import ContractCandidateGenerator, IncidentFeedbackGenerator, PolicyEditor
 
 CapabilityResult = ContractResult
 CapabilityValidator = ContractValidator
 
-_BUNDLED_DEFAULT_POLICY_PATH = Path(__file__).resolve().parent / "policy" / "default_tool_permissions.yaml"
+_BUNDLED_ROOT = Path(__file__).resolve().parent
+_BUNDLED_DEFAULT_POLICY_PATH = _BUNDLED_ROOT / "policy" / "default_tool_permissions.yaml"
+_BUNDLED_SCHEMAS_DIR = _BUNDLED_ROOT / "schemas"
+_DEFAULT_PROJECT_POLICY_PATH = Path("policy") / "tool_permissions.yaml"
+_DEFAULT_EVENT_LOG_PATH = Path("logs") / "layer_b" / "events.jsonl"
+
+
+def _resolve_event_log_path(path: str | Path | None = None) -> Path:
+    configured = (
+        path
+        or os.getenv("LAYERB_EVENT_LOG")
+        or _DEFAULT_EVENT_LOG_PATH
+    )
+    return Path(configured)
 
 
 @dataclass(frozen=True)
 class LayerBPaths:
-    policy_path: str = "policy/tool_permissions.yaml"
-    schemas_dir: str = "schemas"
+    policy_path: str = str(_DEFAULT_PROJECT_POLICY_PATH)
+    schemas_dir: str = str(_BUNDLED_SCHEMAS_DIR)
     base_policy_path: str = str(_BUNDLED_DEFAULT_POLICY_PATH)
+    event_log_path: str = str(_DEFAULT_EVENT_LOG_PATH)
 
 
 class LayerBPolicy:
@@ -41,14 +53,16 @@ class LayerBPolicy:
     def __init__(
         self,
         *,
-        policy_path: str = "policy/tool_permissions.yaml",
-        schemas_dir: str = "schemas",
+        policy_path: str = str(_DEFAULT_PROJECT_POLICY_PATH),
+        schemas_dir: str = str(_BUNDLED_SCHEMAS_DIR),
         base_policy_path: str | None = str(_BUNDLED_DEFAULT_POLICY_PATH),
+        event_log_path: str | None = str(_DEFAULT_EVENT_LOG_PATH),
     ) -> None:
         self.paths = LayerBPaths(
             policy_path=policy_path,
             schemas_dir=schemas_dir,
             base_policy_path=base_policy_path or "",
+            event_log_path=event_log_path or "",
         )
 
     def load(self) -> ContractValidator:
@@ -56,13 +70,11 @@ class LayerBPolicy:
             self.paths.policy_path,
             self.paths.schemas_dir,
             base_policy_path=self.paths.base_policy_path or None,
-            unknown_capability_mode=os.getenv("ASCP_UNKNOWN_CAPABILITY_MODE", "auto_allow"),
-            audit_log_path=os.getenv("ASCP_LAYER_B_EVENT_LOG"),
-            langwatch_enabled=bool(os.getenv("LANGWATCH_KEY") or os.getenv("LANGWATCH_API_KEY")),
-            langwatch_api_key=os.getenv("LANGWATCH_KEY") or os.getenv("LANGWATCH_API_KEY"),
-            langwatch_endpoint=os.getenv("LANGWATCH_ENDPOINT"),
-            langwatch_project=os.getenv("LANGWATCH_PROJECT", "layer-b-sdk"),
-            langwatch_debug=str(os.getenv("LANGWATCH_DEBUG", "")).lower() in {"1", "true", "yes", "on"},
+            unknown_capability_mode=(
+                os.getenv("LAYERB_UNKNOWN_CAPABILITY_MODE")
+                or "auto_allow"
+            ),
+            event_log_path=_resolve_event_log_path(self.paths.event_log_path or None),
         )
 
 
@@ -73,9 +85,10 @@ class LayerBEngine:
         self,
         validator: ContractValidator | None = None,
         *,
-        policy_path: str = "policy/tool_permissions.yaml",
-        schemas_dir: str = "schemas",
+        policy_path: str = str(_DEFAULT_PROJECT_POLICY_PATH),
+        schemas_dir: str = str(_BUNDLED_SCHEMAS_DIR),
         base_policy_path: str | None = str(_BUNDLED_DEFAULT_POLICY_PATH),
+        event_log_path: str | None = str(_DEFAULT_EVENT_LOG_PATH),
         agent_id: str = "layer-b-local",
         framework: str = "layer_b",
     ) -> None:
@@ -83,14 +96,29 @@ class LayerBEngine:
             policy_path=policy_path,
             schemas_dir=schemas_dir,
             base_policy_path=base_policy_path,
+            event_log_path=event_log_path,
         )
         self.validator = validator or self.policy.load()
         self.agent_id = agent_id
         self.framework = framework
+        validator_event_log = getattr(self.validator, "event_log_path", None)
+        self.event_log_path = (
+            Path(validator_event_log)
+            if validator_event_log is not None
+            else _resolve_event_log_path(self.policy.paths.event_log_path or None)
+        )
 
     @classmethod
     def from_defaults(cls) -> LayerBEngine:
         return cls()
+
+    def describe_paths(self) -> dict[str, str]:
+        return {
+            "policy_path": str(Path(self.policy.paths.policy_path)),
+            "schemas_dir": str(Path(self.policy.paths.schemas_dir)),
+            "base_policy_path": str(Path(self.policy.paths.base_policy_path)),
+            "event_log_path": str(self.event_log_path),
+        }
 
     def list_capabilities(self) -> list[str]:
         return self.validator.list_capabilities()
@@ -191,11 +219,7 @@ class LayerBEngine:
         event_log_path: str | Path | None = None,
         min_occurrences: int = 2,
     ) -> list[dict[str, Any]]:
-        source = Path(
-            event_log_path
-            or os.getenv("ASCP_LAYER_B_EVENT_LOG")
-            or "data/layer_b_events.jsonl"
-        )
+        source = Path(event_log_path) if event_log_path is not None else self.event_log_path
         editor = PolicyEditor(self.policy.paths.policy_path)
         generator = IncidentFeedbackGenerator(editor, event_log_path=source)
         return [
@@ -211,11 +235,7 @@ class LayerBEngine:
         event_log_path: str | Path | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        source = Path(
-            event_log_path
-            or os.getenv("ASCP_LAYER_B_EVENT_LOG")
-            or "data/layer_b_events.jsonl"
-        )
+        source = Path(event_log_path) if event_log_path is not None else self.event_log_path
         if not source.exists():
             return []
 
@@ -237,13 +257,15 @@ def _load_json(value: str | None, default: Any) -> Any:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Inspect and run Layer B in isolation.")
-    parser.add_argument("--policy", default="policy/tool_permissions.yaml")
-    parser.add_argument("--schemas", default="schemas")
+    parser.add_argument("--policy", default=str(_DEFAULT_PROJECT_POLICY_PATH))
+    parser.add_argument("--schemas", default=str(_BUNDLED_SCHEMAS_DIR))
+    parser.add_argument("--event-log", default=str(_DEFAULT_EVENT_LOG_PATH))
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("list", help="List registered capabilities.")
     subparsers.add_parser("events", help="Show recent Layer B security events.")
+    subparsers.add_parser("paths", help="Show the active Layer B paths.")
     subparsers.add_parser("candidates", help="Show auto-generated contract candidates.")
     feedback_parser = subparsers.add_parser("feedback", help="Show feedback-loop contract suggestions.")
     feedback_parser.add_argument("--min-occurrences", type=int, default=2)
@@ -279,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     engine = LayerBEngine(
         policy_path=args.policy,
         schemas_dir=args.schemas,
+        event_log_path=args.event_log,
     )
 
     if args.command == "list":
@@ -287,6 +310,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "events":
         print(json.dumps(engine.recent_security_events(), indent=2, default=str))
+        return 0
+
+    if args.command == "paths":
+        print(json.dumps(engine.describe_paths(), indent=2))
         return 0
 
     if args.command == "candidates":
@@ -345,5 +372,7 @@ __all__ = [
 ]
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+
+
+
+

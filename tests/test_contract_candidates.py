@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
@@ -7,8 +7,8 @@ from uuid import uuid4
 
 import yaml
 
-from apps.gateway.policies.candidates import ContractCandidateGenerator
-from apps.gateway.policies.editor import PolicyEditor
+from layerb import ContractCandidateGenerator
+from layerb import PolicyEditor
 
 
 def _schema_hash(schema: dict[str, object]) -> str:
@@ -141,3 +141,7 @@ def test_write_tool_candidates_persists_json_snapshot() -> None:
     assert len(candidates) == 1
     assert payload[0]["name"] == "search_query"
     assert payload[0]["match_type"] == "exact_name"
+
+
+
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -9,8 +9,8 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
-from apps.adapters.runtime_registry import register_runtime_tool
-from layer_b import LayerBEngine
+from layerb.runtime_registry import register_runtime_tool
+from layerb import LayerBEngine
 
 load_dotenv()
 
@@ -53,7 +53,7 @@ def project_lookup(topic: str) -> dict[str, Any]:
         ],
         "production": [
             "Production usage should keep local audit logging enabled.",
-            "LangWatch is optional and should remain an observability sink, not the policy source of truth.",
+            "Project YAML contracts can override the bundled Layer B defaults tool by tool.",
         ],
     }
     normalized = topic.strip().lower()
@@ -274,15 +274,18 @@ def main() -> int:
     _register_tools()
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    event_log_path = Path(os.getenv("ASCP_LAYER_B_EVENT_LOG") or f"data/layer_b_demo_events_{timestamp}.jsonl")
-    os.environ["ASCP_LAYER_B_EVENT_LOG"] = str(event_log_path)
-    os.environ.setdefault("LANGWATCH_PROJECT", "layer-b-sdk-demo")
+    event_log_path = Path(os.getenv("LAYERB_EVENT_LOG") or f"logs/layer_b/demo_events_{timestamp}.jsonl")
+    os.environ["LAYERB_EVENT_LOG"] = str(event_log_path)
 
     base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     api_key = os.getenv("OLLAMA_API_KEY")
     model = os.getenv("OLLAMA_MODEL", "gpt-oss")
 
-    engine = LayerBEngine(agent_id="layer-b-ollama-demo", framework="ollama")
+    engine = LayerBEngine(
+        agent_id="layer-b-ollama-demo",
+        framework="ollama",
+        event_log_path=str(event_log_path),
+    )
 
     scenarios = [
         "Use the file_read tool to inspect README.md and summarize Layer B in one sentence.",
@@ -290,8 +293,7 @@ def main() -> int:
     ]
 
     print(f"Using Ollama model: {model}")
-    print(f"Layer B event log: {event_log_path}")
-    print("LangWatch enabled:" f" {bool(os.getenv('LANGWATCH_KEY') or os.getenv('LANGWATCH_API_KEY'))}")
+    print(f"Layer B event log: {engine.describe_paths()['event_log_path']}")
 
     for prompt in scenarios:
         print("\n=== Scenario ===")
@@ -333,3 +335,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -6,9 +6,9 @@ from uuid import uuid4
 
 import yaml
 
-from apps.gateway.middleware.pep_tool import ContractDecision, ContractValidator
-from apps.gateway.policies.editor import PolicyEditor
-from apps.gateway.policies.feedback import IncidentFeedbackGenerator
+from layerb import ContractDecision, ContractValidator
+from layerb import PolicyEditor
+from layerb import IncidentFeedbackGenerator
 
 
 def _make_validator_files(name: str, policy: dict[str, object]) -> tuple[Path, Path, Path]:
@@ -48,7 +48,6 @@ def test_validator_writes_jsonl_security_events_with_trace_metadata() -> None:
         policy_path,
         schemas_dir,
         audit_log_path=event_log_path,
-        langwatch_enabled=False,
     )
 
     result = validator.validate_call(
@@ -124,3 +123,7 @@ def test_incident_feedback_generator_suggests_contract_refinement_for_unknown_to
     assert suggestion.recommended_patch == {"approval_required": True}
     assert suggestion.recommended_contract["approval_required"] is True
     assert suggestion.example_event_ids == ["evt-1", "evt-2"]
+
+
+
+

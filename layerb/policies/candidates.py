@@ -1,4 +1,4 @@
-"""
+﻿"""
 Auto-generate contract candidates from observed runtime tools.
 """
 
@@ -12,8 +12,8 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any, Literal
 
-from apps.adapters.runtime_registry import list_runtime_tools
-from apps.gateway.policies.editor import PolicyEditor
+from layerb.runtime_registry import list_runtime_tools
+from layerb.policies.editor import PolicyEditor
 
 
 CandidateMatchType = Literal["exact_name", "argument_schema_hash"]
@@ -201,3 +201,6 @@ __all__ = [
     "ContractCandidate",
     "ContractCandidateGenerator",
 ]
+
+
+
