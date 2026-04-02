@@ -32,6 +32,7 @@ CLI:
 python -m layerb paths
 python -m layerb list
 python -m layerb events
+python -m layerb feedback --report
 ```
 
 ## Matching Order
@@ -167,6 +168,7 @@ Key methods on `LayerBEngine`:
 - `recent_security_events(...)`
 - `generate_contract_candidates()`
 - `generate_feedback_suggestions(...)`
+- `generate_feedback_report(...)`
 
 ## Main Files
 
@@ -189,7 +191,7 @@ Key methods on `LayerBEngine`:
   Candidate generation for newly observed tools.
 
 - `layerb/policies/feedback.py`
-  Feedback suggestions from repeated incidents.
+  Feedback suggestions and aggregated reports from repeated incidents. The feedback loop is advisory only and never mutates the active policy by itself.
 
 ## Scope
 
@@ -203,6 +205,7 @@ It does not:
 - implement the other SDK layers
 
 Those concerns remain outside Layer B by design.
+
 
 
 

@@ -6,6 +6,7 @@ from layerb.policies import (
     ContractCandidate,
     ContractCandidateGenerator,
     ContractFeedbackSuggestion,
+    FeedbackLoopReport,
     IncidentFeedbackGenerator,
     PolicyEditor,
     PolicyLoader,
@@ -44,6 +45,7 @@ __all__ = [
     "ContractFeedbackSuggestion",
     "ContractResult",
     "ContractValidator",
+    "FeedbackLoopReport",
     "IncidentFeedbackGenerator",
     "JsonlSecurityEventObserver",
     "LayerBEngine",
@@ -60,7 +62,3 @@ __all__ = [
     "register_runtime_tool",
     "resolve_tool_path",
 ]
-
-
-
-

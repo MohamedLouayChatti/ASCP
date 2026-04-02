@@ -1,4 +1,4 @@
-﻿"""SDK-facing Layer B surface for typed capability security contracts."""
+"""SDK-facing Layer B surface for typed capability security contracts."""
 
 from __future__ import annotations
 
@@ -229,6 +229,34 @@ class LayerBEngine:
             )
         ]
 
+    def generate_feedback_report(
+        self,
+        *,
+        event_log_path: str | Path | None = None,
+        min_occurrences: int = 2,
+    ) -> dict[str, Any]:
+        source = Path(event_log_path) if event_log_path is not None else self.event_log_path
+        editor = PolicyEditor(self.policy.paths.policy_path)
+        generator = IncidentFeedbackGenerator(editor, event_log_path=source)
+        return generator.generate_tool_feedback_report(
+            min_occurrences=min_occurrences
+        ).to_dict()
+
+    def write_feedback_report(
+        self,
+        path: str | Path,
+        *,
+        event_log_path: str | Path | None = None,
+        min_occurrences: int = 2,
+    ) -> dict[str, Any]:
+        source = Path(event_log_path) if event_log_path is not None else self.event_log_path
+        editor = PolicyEditor(self.policy.paths.policy_path)
+        generator = IncidentFeedbackGenerator(editor, event_log_path=source)
+        return generator.write_tool_feedback_report(
+            path,
+            min_occurrences=min_occurrences,
+        ).to_dict()
+
     def recent_security_events(
         self,
         *,
@@ -269,6 +297,8 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("candidates", help="Show auto-generated contract candidates.")
     feedback_parser = subparsers.add_parser("feedback", help="Show feedback-loop contract suggestions.")
     feedback_parser.add_argument("--min-occurrences", type=int, default=2)
+    feedback_parser.add_argument("--report", action="store_true", help="Show an aggregated feedback-loop report.")
+    feedback_parser.add_argument("--write-report", help="Write the aggregated feedback-loop report to a JSON file.")
 
     inspect_parser = subparsers.add_parser("inspect", help="Inspect one capability contract.")
     inspect_parser.add_argument("capability")
@@ -321,13 +351,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "feedback":
-        print(
-            json.dumps(
-                engine.generate_feedback_suggestions(min_occurrences=args.min_occurrences),
-                indent=2,
-                default=str,
+        if args.write_report:
+            payload = engine.write_feedback_report(
+                args.write_report,
+                min_occurrences=args.min_occurrences,
             )
-        )
+        else:
+            payload = (
+                engine.generate_feedback_report(min_occurrences=args.min_occurrences)
+                if args.report
+                else engine.generate_feedback_suggestions(min_occurrences=args.min_occurrences)
+            )
+        print(json.dumps(payload, indent=2, default=str))
         return 0
 
     if args.command == "inspect":
@@ -370,9 +405,3 @@ __all__ = [
     "RiskLevel",
     "main",
 ]
-
-
-
-
-
-

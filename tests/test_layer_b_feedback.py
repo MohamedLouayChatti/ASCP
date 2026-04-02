@@ -7,8 +7,9 @@ from uuid import uuid4
 import yaml
 
 from layerb import ContractDecision, ContractValidator
-from layerb import PolicyEditor
+from layerb import FeedbackLoopReport
 from layerb import IncidentFeedbackGenerator
+from layerb import PolicyEditor
 
 
 def _make_validator_files(name: str, policy: dict[str, object]) -> tuple[Path, Path, Path]:
@@ -114,9 +115,76 @@ def test_validator_logs_approval_token_when_approval_is_required() -> None:
     assert event["sanitized_args"] is None
 
 
-def test_incident_feedback_generator_suggests_contract_refinement_for_unknown_tool() -> None:
+def test_incident_feedback_generator_builds_actionable_non_mutating_suggestions() -> None:
     policy = {"version": "1.0", "capabilities": {}}
     policy_path, schemas_dir, event_log_path = _make_validator_files("feedback", policy)
+    _ = schemas_dir
+
+    event_log_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event_id": "evt-1",
+                        "component_type": "tool",
+                        "component_name": "search_query",
+                        "decision": "require_approval",
+                        "reason_code": "APPROVAL_REQUIRED",
+                        "details": "Capability 'search_query' is not registered and requires human approval.",
+                        "args": {"query": "Layer B status"},
+                        "recorded_at": "2026-04-02T15:00:00+00:00",
+                        "trace": {"policy_match": "unknown_capability"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event_id": "evt-2",
+                        "component_type": "tool",
+                        "component_name": "search_query",
+                        "decision": "require_approval",
+                        "reason_code": "APPROVAL_REQUIRED",
+                        "details": "Capability 'search_query' is not registered and requires human approval.",
+                        "args": {"query": "Layer B roadmap"},
+                        "recorded_at": "2026-04-02T15:05:00+00:00",
+                        "trace": {"policy_match": "unknown_capability"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    generator = IncidentFeedbackGenerator(
+        PolicyEditor(policy_path),
+        event_log_path=event_log_path,
+    )
+
+    suggestions = generator.generate_tool_feedback_suggestions(min_occurrences=2)
+
+    assert len(suggestions) == 1
+    suggestion = suggestions[0]
+    assert suggestion.name == "search_query"
+    assert suggestion.reason_code == "APPROVAL_REQUIRED"
+    assert suggestion.action == "register_or_review"
+    assert suggestion.recommended_patch == {"approval_required": True}
+    assert suggestion.recommended_contract["approval_required"] is True
+    assert "capabilities:" in suggestion.suggested_yaml
+    assert "search_query:" in suggestion.suggested_yaml
+    assert suggestion.example_event_ids == ["evt-1", "evt-2"]
+    assert suggestion.example_args == [
+        {"query": "Layer B status"},
+        {"query": "Layer B roadmap"},
+    ]
+    assert suggestion.observed_policy_matches == ["unknown_capability"]
+    assert suggestion.last_seen_at == "2026-04-02T15:05:00+00:00"
+    assert "does not mutate" in suggestion.reasons[1]
+    assert "suggest adding or explicitly reviewing a project contract" in suggestion.summary
+
+
+def test_incident_feedback_generator_builds_aggregate_report() -> None:
+    policy = {"version": "1.0", "capabilities": {}}
+    policy_path, schemas_dir, event_log_path = _make_validator_files("feedback-report", policy)
     _ = schemas_dir
 
     event_log_path.write_text(
@@ -144,6 +212,17 @@ def test_incident_feedback_generator_suggests_contract_refinement_for_unknown_to
                         "args": {"query": "Layer B roadmap"},
                     }
                 ),
+                json.dumps(
+                    {
+                        "event_id": "evt-3",
+                        "component_type": "tool",
+                        "component_name": "file_read",
+                        "decision": "block",
+                        "reason_code": "PATH_POLICY_VIOLATION",
+                        "details": "Path constraint failed (path_not_in_allowlist): secrets.txt",
+                        "args": {"path": "secrets.txt"},
+                    }
+                ),
             ]
         )
         + "\n",
@@ -155,12 +234,13 @@ def test_incident_feedback_generator_suggests_contract_refinement_for_unknown_to
         event_log_path=event_log_path,
     )
 
-    suggestions = generator.generate_tool_feedback_suggestions(min_occurrences=2)
+    report = generator.generate_tool_feedback_report(min_occurrences=2)
 
-    assert len(suggestions) == 1
-    suggestion = suggestions[0]
-    assert suggestion.name == "search_query"
-    assert suggestion.reason_code == "APPROVAL_REQUIRED"
-    assert suggestion.recommended_patch == {"approval_required": True}
-    assert suggestion.recommended_contract["approval_required"] is True
-    assert suggestion.example_event_ids == ["evt-1", "evt-2"]
+    assert isinstance(report, FeedbackLoopReport)
+    assert report.total_events == 3
+    assert report.analyzed_tool_events == 3
+    assert report.suggestion_count == 1
+    assert report.tools_with_suggestions == ["search_query"]
+    assert report.reason_counts["APPROVAL_REQUIRED"] == 2
+    assert report.reason_counts["PATH_POLICY_VIOLATION"] == 1
+    assert report.suggestions[0].name == "search_query"

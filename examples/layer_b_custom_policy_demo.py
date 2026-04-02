@@ -165,6 +165,7 @@ def main() -> int:
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     event_log_path = Path("logs") / "layer_b" / f"custom_policy_demo_{timestamp}.jsonl"
+    feedback_report_path = Path("logs") / "layer_b" / f"custom_policy_feedback_{timestamp}.json"
 
     engine = LayerBEngine(
         policy_path=str(CUSTOM_POLICY_PATH),
@@ -222,8 +223,17 @@ def main() -> int:
     print("\n=== Contract Candidates ===")
     print(json.dumps(engine.generate_contract_candidates(), indent=2, default=str))
 
+    print("\n=== Feedback Report Export ===")
+    feedback_report = engine.write_feedback_report(
+        feedback_report_path,
+        min_occurrences=1,
+    )
+    print(f"Wrote feedback report to: {feedback_report_path}")
+    print(json.dumps(feedback_report, indent=2, default=str))
+
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
