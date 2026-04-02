@@ -1,0 +1,26 @@
+﻿version: '1.0'
+capabilities:
+  file_read:
+    risk: high
+    scopes:
+    - local_fs
+    approval_required: true
+    description: Only allow approved reads from the repository README in this demo policy.
+    constraints:
+      deny_path_traversal: true
+      path_allowlist:
+      - README.md
+  project_lookup:
+    risk: low
+    scopes:
+    - custom
+    approval_required: false
+    description: Allow in-memory project notes lookup without approval.
+  custom_review_default:
+    risk: high
+    scopes:
+    - custom
+    approval_required: true
+    description: Any other tool call requires explicit approval in this custom project policy.
+    match:
+      catch_all: true

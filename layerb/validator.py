@@ -796,7 +796,9 @@ class ContractValidator:
                 "reason_code": result.reason_code,
                 "details": result.details,
                 "violations": list(result.violations),
+                "approval_token": result.approval_token,
                 "approval_token_issued": bool(result.approval_token),
+                "sanitized_args": copy.deepcopy(result.sanitized_args),
                 "operation_fingerprint": _approval_fingerprint(component_type, component_name, args),
                 "agent_id": agent_id,
                 "framework": framework,
@@ -2223,7 +2225,9 @@ class ContractValidator:
                 "decision": ContractDecision.ALLOW.value,
                 "reason_code": "OUTPUT_SANITIZED",
                 "details": "Output postconditions applied.",
+                "approval_token": None,
                 "violations": [],
+                "sanitized_args": None,
                 "approval_token_issued": False,
                 "operation_fingerprint": _approval_fingerprint(ComponentType.TOOL.value, tool_name, {}),
                 "agent_id": "postcondition",
@@ -2325,4 +2329,5 @@ __all__ = [
     "_check_path_traversal",
     "_check_sql",
 ]
+
 

@@ -65,12 +65,53 @@ def test_validator_writes_jsonl_security_events_with_trace_metadata() -> None:
     event = payload[0]
     assert event["component_name"] == "demo_tool"
     assert event["decision"] == "allow"
+    assert event["approval_token"] is None
+    assert event["sanitized_args"] == {"query": "hello"}
     assert event["trace"]["policy_match"] == "exact_name"
     assert event["trace"]["contract_name"] == "demo_tool"
     assert event["trace"]["input_schema_hash"]
     assert event["operation_fingerprint"]
     assert event["event_id"]
     assert event["recorded_at"]
+
+
+def test_validator_logs_approval_token_when_approval_is_required() -> None:
+    policy = {
+        "version": "1.0",
+        "capabilities": {
+            "review_tool": {
+                "risk": "high",
+                "scopes": ["custom"],
+                "approval_required": True,
+                "constraints": {},
+            }
+        },
+    }
+    policy_path, schemas_dir, event_log_path = _make_validator_files("approval-log", policy)
+    _ = schemas_dir
+
+    validator = ContractValidator(
+        policy_path,
+        schemas_dir,
+        audit_log_path=event_log_path,
+    )
+
+    result = validator.validate_call(
+        "review_tool",
+        {"query": "hello"},
+        agent_id="pytest-agent",
+        framework="pytest",
+    )
+
+    payload = [json.loads(line) for line in event_log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    assert result.decision == ContractDecision.REQUIRE_APPROVAL
+    assert result.approval_token is not None
+    assert len(payload) == 1
+    event = payload[0]
+    assert event["approval_token"] == result.approval_token
+    assert event["approval_token_issued"] is True
+    assert event["sanitized_args"] is None
 
 
 def test_incident_feedback_generator_suggests_contract_refinement_for_unknown_tool() -> None:
@@ -123,7 +164,3 @@ def test_incident_feedback_generator_suggests_contract_refinement_for_unknown_to
     assert suggestion.recommended_patch == {"approval_required": True}
     assert suggestion.recommended_contract["approval_required"] is True
     assert suggestion.example_event_ids == ["evt-1", "evt-2"]
-
-
-
-
