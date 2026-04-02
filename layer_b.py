@@ -25,11 +25,14 @@ from apps.gateway.policies import ContractCandidateGenerator, IncidentFeedbackGe
 CapabilityResult = ContractResult
 CapabilityValidator = ContractValidator
 
+_BUNDLED_DEFAULT_POLICY_PATH = Path(__file__).resolve().parent / "policy" / "default_tool_permissions.yaml"
+
 
 @dataclass(frozen=True)
 class LayerBPaths:
     policy_path: str = "policy/tool_permissions.yaml"
     schemas_dir: str = "schemas"
+    base_policy_path: str = str(_BUNDLED_DEFAULT_POLICY_PATH)
 
 
 class LayerBPolicy:
@@ -40,13 +43,19 @@ class LayerBPolicy:
         *,
         policy_path: str = "policy/tool_permissions.yaml",
         schemas_dir: str = "schemas",
+        base_policy_path: str | None = str(_BUNDLED_DEFAULT_POLICY_PATH),
     ) -> None:
-        self.paths = LayerBPaths(policy_path=policy_path, schemas_dir=schemas_dir)
+        self.paths = LayerBPaths(
+            policy_path=policy_path,
+            schemas_dir=schemas_dir,
+            base_policy_path=base_policy_path or "",
+        )
 
     def load(self) -> ContractValidator:
         return ContractValidator(
             self.paths.policy_path,
             self.paths.schemas_dir,
+            base_policy_path=self.paths.base_policy_path or None,
             unknown_capability_mode=os.getenv("ASCP_UNKNOWN_CAPABILITY_MODE", "auto_allow"),
             audit_log_path=os.getenv("ASCP_LAYER_B_EVENT_LOG"),
             langwatch_enabled=bool(os.getenv("LANGWATCH_KEY") or os.getenv("LANGWATCH_API_KEY")),
@@ -66,10 +75,15 @@ class LayerBEngine:
         *,
         policy_path: str = "policy/tool_permissions.yaml",
         schemas_dir: str = "schemas",
+        base_policy_path: str | None = str(_BUNDLED_DEFAULT_POLICY_PATH),
         agent_id: str = "layer-b-local",
         framework: str = "layer_b",
     ) -> None:
-        self.policy = LayerBPolicy(policy_path=policy_path, schemas_dir=schemas_dir)
+        self.policy = LayerBPolicy(
+            policy_path=policy_path,
+            schemas_dir=schemas_dir,
+            base_policy_path=base_policy_path,
+        )
         self.validator = validator or self.policy.load()
         self.agent_id = agent_id
         self.framework = framework

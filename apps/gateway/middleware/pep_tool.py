@@ -37,6 +37,8 @@ try:
 except ImportError:  # pragma: no cover
     yaml = None  # type: ignore[assignment]
 
+from apps.adapters.runtime_registry import get_runtime_tool
+
 try:
     from jsonschema import ValidationError
     from jsonschema import validate as _jsonschema_validate
@@ -86,6 +88,34 @@ _DANGEROUS_UNKNOWN_ARG_NAMES = frozenset(
         "script",
     }
 )
+_SEMANTIC_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "any",
+        "by",
+        "do",
+        "for",
+        "from",
+        "get",
+        "in",
+        "of",
+        "on",
+        "the",
+        "to",
+        "tool",
+        "using",
+        "with",
+    }
+)
+_INFERRED_FAMILY_KEYWORDS: dict[str, frozenset[str]] = {
+    "shell_exec": frozenset({"bash", "cli", "cmd", "command", "console", "exec", "execute", "powershell", "run", "shell", "terminal"}),
+    "db_query": frozenset({"database", "db", "fetch", "query", "record", "row", "select", "sql", "table"}),
+    "web_fetch": frozenset({"api", "download", "fetch", "http", "https", "request", "scrape", "site", "url", "web"}),
+    "file_write": frozenset({"append", "content", "create", "file", "path", "save", "update", "write", "writer"}),
+    "file_read": frozenset({"cat", "document", "file", "load", "open", "path", "read", "reader", "view"}),
+}
 
 
 class PolicyValidationError(ValueError):
@@ -474,6 +504,117 @@ def _deep_merge_dicts(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str
     return merged
 
 
+def _merge_policy_dicts(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_policy_dicts(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _tokenize_text(value: str) -> set[str]:
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    pieces = re.split(r"[^a-zA-Z0-9]+", normalized.lower())
+    return {
+        piece
+        for piece in pieces
+        if piece and len(piece) > 1 and piece not in _SEMANTIC_STOPWORDS
+    }
+
+
+def _schema_semantic_tokens(schema: Any) -> set[str]:
+    if not isinstance(schema, dict):
+        return set()
+
+    tokens: set[str] = set()
+    for key in ("title", "description"):
+        value = schema.get(key)
+        if isinstance(value, str):
+            tokens.update(_tokenize_text(value))
+
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for field_name, field_schema in properties.items():
+            tokens.update(_tokenize_text(str(field_name)))
+            tokens.update(_schema_semantic_tokens(field_schema))
+
+    items = schema.get("items")
+    if items is not None:
+        tokens.update(_schema_semantic_tokens(items))
+
+    return tokens
+
+
+def _family_names_from_match(match_cfg: dict[str, Any]) -> set[str]:
+    families: list[Any] = []
+    for key in ("inferred_families", "semantic_families"):
+        value = match_cfg.get(key)
+        if isinstance(value, list):
+            families.extend(value)
+        elif value is not None:
+            families.append(value)
+    for key in ("inferred_family", "semantic_family"):
+        value = match_cfg.get(key)
+        if value is not None:
+            families.append(value)
+    return {str(item).strip().lower() for item in families if str(item).strip()}
+
+
+def _infer_tool_family(
+    tool_name: str,
+    args: dict[str, Any] | None,
+    invocation_context: dict[str, Any] | None,
+) -> tuple[str | None, float]:
+    args = args if isinstance(args, dict) else {}
+    invocation_context = invocation_context if isinstance(invocation_context, dict) else {}
+
+    tokens = _tokenize_text(tool_name)
+    for field_name in args:
+        tokens.update(_tokenize_text(str(field_name)))
+
+    runtime_tool = get_runtime_tool(tool_name)
+    if runtime_tool:
+        description = runtime_tool.get("description")
+        if isinstance(description, str):
+            tokens.update(_tokenize_text(description))
+        tool_path = runtime_tool.get("tool_path")
+        if isinstance(tool_path, str):
+            tokens.update(_tokenize_text(tool_path))
+        tokens.update(_schema_semantic_tokens(runtime_tool.get("args_schema")))
+
+    containers: list[dict[str, Any]] = [invocation_context]
+    for key in ("tool", "metadata", "tool_metadata", "observed_tool"):
+        nested = invocation_context.get(key)
+        if isinstance(nested, dict):
+            containers.append(nested)
+
+    for container in containers:
+        for key in ("argument_schema", "arg_schema", "args_schema", "input_schema", "parameters"):
+            if key in container:
+                tokens.update(_schema_semantic_tokens(container.get(key)))
+        description = container.get("description")
+        if isinstance(description, str):
+            tokens.update(_tokenize_text(description))
+
+    scored: list[tuple[str, float]] = []
+    for family, keywords in _INFERRED_FAMILY_KEYWORDS.items():
+        overlap = keywords.intersection(tokens)
+        score = len(overlap) / len(keywords) if keywords else 0.0
+        scored.append((family, score))
+
+    scored.sort(key=lambda item: item[1], reverse=True)
+    best_family, best_score = scored[0] if scored else (None, 0.0)
+    if best_family is None or best_score < 0.20:
+        return None, 0.0
+
+    runner_up = scored[1][1] if len(scored) > 1 else 0.0
+    if runner_up and (best_score - runner_up) < 0.10:
+        return None, 0.0
+    return best_family, round(best_score, 3)
+
+
 def _extract_field_values(payload: dict[str, Any], field_path: str) -> list[Any]:
     values: list[Any] = [payload]
     for part in field_path.split("."):
@@ -591,6 +732,8 @@ class ResolvedContract:
     contract: dict[str, Any]
     match_type: str = "exact_name"
     schema_hash: str | None = None
+    inferred_family: str | None = None
+    match_score: float | None = None
 
 
 def _normalize_schema_hash(value: Any) -> str:
@@ -674,6 +817,7 @@ class ContractValidator:
         tool_permissions_path: str | Path,
         schemas_dir: str | Path,
         *,
+        base_policy_path: str | Path | None = None,
         unknown_capability_mode: UnknownCapabilityMode = "auto_allow",
         security_observer: SecurityEventObserver | None = None,
         audit_log_path: str | Path | None = None,
@@ -692,6 +836,7 @@ class ContractValidator:
                 f"{expected}; got {unknown_capability_mode!r}."
             )
         self._permissions_path = Path(tool_permissions_path)
+        self._base_policy_path = Path(base_policy_path) if base_policy_path else None
         self._schemas_dir = Path(schemas_dir)
         self._unknown_capability_mode = normalized_unknown_mode
         self._raw_policy: dict[str, Any] = {}
@@ -702,7 +847,7 @@ class ContractValidator:
         self._runtime_rules: dict[str, Any] = {}
         self._schemas: dict[tuple[str, str], Any] = {}
         self._pending_approvals: dict[str, dict[str, Any]] = {}
-        self._loaded_mtime_ns: int | None = None
+        self._loaded_mtimes_ns: tuple[int | None, int | None] | None = None
         if security_observer is not None:
             self._security_observer = security_observer
         else:
@@ -922,6 +1067,7 @@ class ContractValidator:
 
         schema_hash_owners: dict[str, str] = {}
         catch_all_names: list[str] = []
+        inferred_family_owners: dict[str, str] = {}
         for name, contract in self._get_capability_contracts(policy).items():
             if not isinstance(contract, dict):
                 continue
@@ -936,6 +1082,14 @@ class ContractValidator:
                         f"'{name}' and '{owner}' both declare '{schema_hash}'."
                     )
                 schema_hash_owners[schema_hash] = name
+            for family_name in _family_names_from_match(match_cfg):
+                owner = inferred_family_owners.get(family_name)
+                if owner is not None and owner != name:
+                    raise PolicyValidationError(
+                        "Capability inferred family matches must be unique; "
+                        f"'{name}' and '{owner}' both declare '{family_name}'."
+                    )
+                inferred_family_owners[family_name] = name
             if _is_catch_all_match(name, contract):
                 catch_all_names.append(name)
         if len(catch_all_names) > 1:
@@ -947,8 +1101,24 @@ class ContractValidator:
     def _load(self) -> None:
         self._schemas = {}
 
-        if self._permissions_path.exists() and yaml is not None:
-            raw = yaml.safe_load(self._permissions_path.read_text(encoding="utf-8")) or {}
+        raw: dict[str, Any] = {}
+        base_mtime: int | None = None
+        policy_mtime: int | None = None
+        loaded_any_policy = False
+
+        if yaml is not None and self._base_policy_path and self._base_policy_path.exists():
+            base_raw = yaml.safe_load(self._base_policy_path.read_text(encoding="utf-8")) or {}
+            raw = _merge_policy_dicts(raw, base_raw)
+            base_mtime = self._base_policy_path.stat().st_mtime_ns
+            loaded_any_policy = True
+
+        if yaml is not None and self._permissions_path.exists():
+            project_raw = yaml.safe_load(self._permissions_path.read_text(encoding="utf-8")) or {}
+            raw = _merge_policy_dicts(raw, project_raw)
+            policy_mtime = self._permissions_path.stat().st_mtime_ns
+            loaded_any_policy = True
+
+        if loaded_any_policy:
             self._validate_policy_shape(raw)
             self._raw_policy = raw
             self._capability_permissions = self._get_capability_contracts(raw)
@@ -956,7 +1126,7 @@ class ContractValidator:
             self._prompt_permissions = raw.get("prompts", {})
             self._capability_sequences = self._get_capability_sequence_policy(raw)
             self._runtime_rules = raw.get("runtime_rules", {})
-            self._loaded_mtime_ns = self._permissions_path.stat().st_mtime_ns
+            self._loaded_mtimes_ns = (policy_mtime, base_mtime)
         else:
             logger.warning("Tool permissions file not found: %s", self._permissions_path)
             self._raw_policy = {}
@@ -965,7 +1135,7 @@ class ContractValidator:
             self._prompt_permissions = {}
             self._capability_sequences = {}
             self._runtime_rules = {}
-            self._loaded_mtime_ns = None
+            self._loaded_mtimes_ns = None
 
         self._preload_schemas("tool", self._capability_permissions)
         self._preload_schemas("resource", self._resource_permissions)
@@ -996,10 +1166,13 @@ class ContractValidator:
             self._schemas[(kind, name)] = json.loads(selected_path.read_text(encoding="utf-8"))
 
     def _maybe_reload(self) -> None:
-        if not self._permissions_path.exists():
-            return
-        current_mtime = self._permissions_path.stat().st_mtime_ns
-        if self._loaded_mtime_ns != current_mtime:
+        policy_mtime = self._permissions_path.stat().st_mtime_ns if self._permissions_path.exists() else None
+        base_mtime = (
+            self._base_policy_path.stat().st_mtime_ns
+            if self._base_policy_path is not None and self._base_policy_path.exists()
+            else None
+        )
+        if self._loaded_mtimes_ns != (policy_mtime, base_mtime):
             self._load()
 
     def _merged_contract(self, kind: str, name: str, base_contract: dict[str, Any]) -> dict[str, Any]:
@@ -1015,6 +1188,7 @@ class ContractValidator:
         self,
         tool_name: str,
         *,
+        args: dict[str, Any] | None = None,
         invocation_context: dict[str, Any] | None = None,
     ) -> ResolvedContract | None:
         exact_contract = self._capability_permissions.get(tool_name)
@@ -1039,6 +1213,23 @@ class ContractValidator:
                         contract=self._merged_contract("tool", name, contract),
                         match_type="argument_schema_hash",
                         schema_hash=schema_hash,
+                    )
+
+        inferred_family, match_score = _infer_tool_family(tool_name, args, invocation_context)
+        if inferred_family is not None:
+            for name, contract in self._capability_permissions.items():
+                if not isinstance(contract, dict):
+                    continue
+                match_cfg = contract.get("match", {})
+                if not isinstance(match_cfg, dict):
+                    continue
+                if inferred_family in _family_names_from_match(match_cfg):
+                    return ResolvedContract(
+                        contract_name=name,
+                        contract=self._merged_contract("tool", name, contract),
+                        match_type="inferred_family",
+                        inferred_family=inferred_family,
+                        match_score=match_score,
                     )
 
         for name, contract in self._capability_permissions.items():
@@ -1851,6 +2042,7 @@ class ContractValidator:
 
         resolved_contract = self._resolve_capability_contract(
             tool_name,
+            args=args,
             invocation_context=invocation_context,
         )
         if resolved_contract is None:
@@ -1892,6 +2084,10 @@ class ContractValidator:
         }
         if resolved_contract.schema_hash is not None:
             decision_metadata["contract_schema_hash"] = resolved_contract.schema_hash
+        if resolved_contract.inferred_family is not None:
+            decision_metadata["inferred_family"] = resolved_contract.inferred_family
+        if resolved_contract.match_score is not None:
+            decision_metadata["match_score"] = resolved_contract.match_score
         schema_result = self._validate_schema(
             "tool",
             resolved_contract.contract_name,

@@ -17,6 +17,7 @@ flowchart TD
     A[Capability / Resource / Prompt request] --> B[Resolve matching contract]
     B -->|Exact name| C[Matched contract]
     B -->|Schema hash| C
+    B -->|Inferred family| C
     B -->|Catch-all| C
     B -->|No match| U[Unknown capability path]
 
@@ -59,9 +60,21 @@ Unknown tools are tools that exist at runtime but do not yet have a policy contr
 
 Current default behavior:
 
-- safe unknown tools are auto-allowed
+- common tool families can be inferred with built-in zero-config contracts
+- named project YAML contracts still override inferred defaults
+- safe unknown tools that do not match a family are auto-allowed
 - dangerous unknown args can still escalate to approval
 - obviously unsafe paths, URLs, SQL, and oversized bodies still block before the mode decision
+
+The practical order is now:
+
+- exact capability name
+- argument schema hash
+- inferred family
+- catch-all
+- unknown capability mode
+
+For SDK adopters this means Layer B works out of the box, while developers can still add exact-name contracts in `policy/tool_permissions.yaml` to override any default behavior per tool.
 
 The unknown capability mode is controlled by `ASCP_UNKNOWN_CAPABILITY_MODE`.
 
