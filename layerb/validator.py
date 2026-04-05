@@ -755,66 +755,105 @@ def _resolve_invocation_schema_hash(invocation_context: dict[str, Any] | None) -
     return None
 
 
-class ContractValidator:
-    """
-    Loads tool, resource, and prompt contracts from YAML policy and enforces them
-    at runtime. The policy file is hot-reloaded when it changes so dynamic rules
-    can be updated without restarting the gateway.
-    """
+class ApprovalManager:
+    """Owns approval token issuance and validation."""
+
+    def __init__(self) -> None:
+        self._pending_approvals: dict[str, dict[str, Any]] = {}
+
+    @property
+    def pending_approvals(self) -> dict[str, dict[str, Any]]:
+        return self._pending_approvals
+
+    def issue_or_validate(
+        self,
+        *,
+        component_type: str,
+        component_name: str,
+        args: dict[str, Any],
+        approval_token: str | None,
+        approval_required: bool,
+        details: str | None = None,
+    ) -> ContractResult | None:
+        if not approval_required:
+            return None
+
+        fingerprint = _approval_fingerprint(component_type, component_name, args)
+
+        if approval_token and approval_token in self._pending_approvals:
+            pending = self._pending_approvals[approval_token]
+            if (
+                pending.get("component_type") == component_type
+                and pending.get("component_name") == component_name
+                and pending.get("fingerprint") == fingerprint
+            ):
+                del self._pending_approvals[approval_token]
+                logger.info(
+                    "Approval granted for %s=%s token=%s",
+                    component_type,
+                    component_name,
+                    approval_token,
+                )
+                return None
+            return ContractResult(
+                decision=ContractDecision.BLOCK,
+                tool_name=component_name,
+                reason_code="APPROVAL_TOKEN_MISMATCH",
+                details="Approval token was issued for a different operation or arguments.",
+                violations=["I1"],
+            )
+
+        token = str(uuid.uuid4())
+        self._pending_approvals[token] = {
+            "component_type": component_type,
+            "component_name": component_name,
+            "fingerprint": fingerprint,
+            "args": copy.deepcopy(args),
+        }
+        return ContractResult(
+            decision=ContractDecision.REQUIRE_APPROVAL,
+            tool_name=component_name,
+            reason_code="APPROVAL_REQUIRED",
+            details=details
+            or f"{component_type.title()} '{component_name}' requires human approval before access.",
+            approval_token=token,
+        )
+
+    def snapshot(self) -> dict[str, Any]:
+        return copy.deepcopy(self._pending_approvals)
+
+
+class SecurityEventRecorder:
+    """Builds and emits Layer B security decision events."""
 
     def __init__(
         self,
-        tool_permissions_path: str | Path,
-        schemas_dir: str | Path,
         *,
-        base_policy_path: str | Path | None = None,
-        unknown_capability_mode: UnknownCapabilityMode = "auto_allow",
         security_observer: SecurityEventObserver | None = None,
         event_log_path: str | Path | None = None,
         audit_log_path: str | Path | None = None,
     ) -> None:
-        if not _HAS_JSONSCHEMA:
-            raise RuntimeError(
-                "jsonschema is not installed; Layer B refuses to start without schema enforcement."
-            )
-        normalized_unknown_mode = _normalize_unknown_capability_mode(unknown_capability_mode)
-        if normalized_unknown_mode not in _UNKNOWN_CAPABILITY_MODES:
-            expected = ", ".join(_UNKNOWN_CAPABILITY_MODES)
-            raise ValueError(
-                "unknown_capability_mode must be one of "
-                f"{expected}; got {unknown_capability_mode!r}."
-            )
-        self._permissions_path = Path(tool_permissions_path)
-        self._base_policy_path = Path(base_policy_path) if base_policy_path else None
-        self._schemas_dir = Path(schemas_dir)
-        self._unknown_capability_mode = normalized_unknown_mode
-        self._raw_policy: dict[str, Any] = {}
-        self._capability_permissions: dict[str, Any] = {}
-        self._resource_permissions: dict[str, Any] = {}
-        self._prompt_permissions: dict[str, Any] = {}
-        self._capability_sequences: dict[str, Any] = {}
-        self._runtime_rules: dict[str, Any] = {}
-        self._schemas: dict[tuple[str, str], Any] = {}
-        self._schema_paths: dict[tuple[str, str], Path] = {}
-        self._pending_approvals: dict[str, dict[str, Any]] = {}
-        self._loaded_mtimes_ns: tuple[int | None, int | None] | None = None
-        self._loaded_schema_mtimes_ns: dict[tuple[str, str], str | None] = {}
         self._event_log_path = Path(event_log_path or audit_log_path) if (event_log_path or audit_log_path) else None
         if security_observer is not None:
             self._security_observer = security_observer
-        else:
-            observers: list[SecurityEventObserver] = []
-            if self._event_log_path is not None:
-                observers.append(JsonlSecurityEventObserver(self._event_log_path))
-            if not observers:
-                self._security_observer = NoopSecurityEventObserver()
-            elif len(observers) == 1:
-                self._security_observer = observers[0]
-            else:
-                self._security_observer = CompositeSecurityEventObserver(observers)
-        self._load()
+            return
 
-    def _emit_security_event(
+        observers: list[SecurityEventObserver] = []
+        if self._event_log_path is not None:
+            observers.append(JsonlSecurityEventObserver(self._event_log_path))
+
+        if not observers:
+            self._security_observer = NoopSecurityEventObserver()
+        elif len(observers) == 1:
+            self._security_observer = observers[0]
+        else:
+            self._security_observer = CompositeSecurityEventObserver(observers)
+
+    @property
+    def event_log_path(self) -> Path | None:
+        return Path(self._event_log_path) if self._event_log_path is not None else None
+
+    def emit_component_decision(
         self,
         *,
         component_type: str,
@@ -851,6 +890,443 @@ class ContractValidator:
                 "invocation_context": invocation_copy,
                 "trace": trace,
             }
+        )
+
+    def emit_output_sanitized(self, tool_name: str) -> None:
+        self._security_observer.emit(
+            {
+                "event_id": str(uuid.uuid4()),
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "component_type": ComponentType.TOOL.value,
+                "component_name": tool_name,
+                "decision": ContractDecision.ALLOW.value,
+                "reason_code": "OUTPUT_SANITIZED",
+                "details": "Output postconditions applied.",
+                "approval_token": None,
+                "violations": [],
+                "sanitized_args": None,
+                "approval_token_issued": False,
+                "operation_fingerprint": _approval_fingerprint(ComponentType.TOOL.value, tool_name, {}),
+                "agent_id": "postcondition",
+                "framework": "layer_b",
+                "args": {},
+                "invocation_context": {},
+                "trace": {
+                    "policy_match": "postcondition",
+                    "contract_name": tool_name,
+                },
+            }
+        )
+
+
+class PolicyStore:
+    """Loads, validates, caches, and resolves policy-backed contracts."""
+
+    def __init__(
+        self,
+        tool_permissions_path: str | Path,
+        schemas_dir: str | Path,
+        *,
+        base_policy_path: str | Path | None = None,
+    ) -> None:
+        self._permissions_path = Path(tool_permissions_path)
+        self._base_policy_path = Path(base_policy_path) if base_policy_path else None
+        self._schemas_dir = Path(schemas_dir)
+        self._raw_policy: dict[str, Any] = {}
+        self._capability_permissions: dict[str, Any] = {}
+        self._resource_permissions: dict[str, Any] = {}
+        self._prompt_permissions: dict[str, Any] = {}
+        self._capability_sequences: dict[str, Any] = {}
+        self._runtime_rules: dict[str, Any] = {}
+        self._schemas: dict[tuple[str, str], Any] = {}
+        self._schema_paths: dict[tuple[str, str], Path] = {}
+        self._loaded_mtimes_ns: tuple[int | None, int | None] | None = None
+        self._loaded_schema_mtimes_ns: dict[tuple[str, str], str | None] = {}
+
+    @property
+    def raw_policy(self) -> dict[str, Any]:
+        return self._raw_policy
+
+    @property
+    def capability_permissions(self) -> dict[str, Any]:
+        return self._capability_permissions
+
+    @property
+    def resource_permissions(self) -> dict[str, Any]:
+        return self._resource_permissions
+
+    @property
+    def prompt_permissions(self) -> dict[str, Any]:
+        return self._prompt_permissions
+
+    @property
+    def capability_sequences(self) -> dict[str, Any]:
+        return self._capability_sequences
+
+    @property
+    def runtime_rules(self) -> dict[str, Any]:
+        return self._runtime_rules
+
+    @property
+    def schemas(self) -> dict[tuple[str, str], Any]:
+        return self._schemas
+
+    def get_capability_contracts(self, policy: dict[str, Any]) -> dict[str, Any]:
+        capabilities = policy.get("capabilities")
+        if isinstance(capabilities, dict) and capabilities:
+            return capabilities
+        tools = policy.get("tools", {})
+        return tools if isinstance(tools, dict) else {}
+
+    def get_runtime_capability_rules(self) -> dict[str, Any]:
+        rules = self._runtime_rules.get("capabilities")
+        if isinstance(rules, dict) and rules:
+            return rules
+        tools = self._runtime_rules.get("tools", {})
+        return tools if isinstance(tools, dict) else {}
+
+    def get_capability_sequence_policy(self, policy: dict[str, Any]) -> dict[str, Any]:
+        sequences = policy.get("capability_sequences", {})
+        return sequences if isinstance(sequences, dict) else {}
+
+    def validate_policy_shape(self, policy: dict[str, Any]) -> None:
+        for top_level in (
+            "capabilities",
+            "tools",
+            "resources",
+            "prompts",
+            "runtime_rules",
+            "capability_sequences",
+        ):
+            value = policy.get(top_level, {})
+            if value is None:
+                continue
+            if not isinstance(value, dict):
+                raise PolicyValidationError(f"Policy section '{top_level}' must be a mapping.")
+
+        valid_scopes = {item.value for item in PermissionScope}
+        valid_risks = {item.value for item in RiskLevel}
+        for name, contract in self.get_capability_contracts(policy).items():
+            if not isinstance(contract, dict):
+                raise PolicyValidationError(f"Capability contract '{name}' must be a mapping.")
+            risk = contract.get("risk", RiskLevel.UNKNOWN.value)
+            if risk not in valid_risks:
+                raise PolicyValidationError(f"Capability '{name}' has invalid risk '{risk}'.")
+            scopes = contract.get("scopes", [])
+            if not isinstance(scopes, list):
+                raise PolicyValidationError(f"Capability '{name}' scopes must be a list.")
+            invalid_scopes = [scope for scope in scopes if scope not in valid_scopes]
+            if invalid_scopes:
+                joined = ", ".join(map(str, invalid_scopes))
+                raise PolicyValidationError(f"Capability '{name}' has invalid scopes: {joined}.")
+            if "approval_required" in contract and not isinstance(contract["approval_required"], bool):
+                raise PolicyValidationError(
+                    f"Capability '{name}' approval_required must be boolean."
+                )
+            if "match" in contract and not isinstance(contract["match"], dict):
+                raise PolicyValidationError(f"Capability '{name}' match must be a mapping.")
+
+        schema_hash_owners: dict[str, str] = {}
+        catch_all_names: list[str] = []
+        inferred_family_owners: dict[str, str] = {}
+        for name, contract in self.get_capability_contracts(policy).items():
+            if not isinstance(contract, dict):
+                continue
+            match_cfg = contract.get("match", {})
+            if not isinstance(match_cfg, dict):
+                continue
+            for schema_hash in _schema_hashes_from_match(match_cfg):
+                owner = schema_hash_owners.get(schema_hash)
+                if owner is not None and owner != name:
+                    raise PolicyValidationError(
+                        "Capability schema hash matches must be unique; "
+                        f"'{name}' and '{owner}' both declare '{schema_hash}'."
+                    )
+                schema_hash_owners[schema_hash] = name
+            for family_name in _family_names_from_match(match_cfg):
+                owner = inferred_family_owners.get(family_name)
+                if owner is not None and owner != name:
+                    raise PolicyValidationError(
+                        "Capability inferred family matches must be unique; "
+                        f"'{name}' and '{owner}' both declare '{family_name}'."
+                    )
+                inferred_family_owners[family_name] = name
+            if _is_catch_all_match(name, contract):
+                catch_all_names.append(name)
+        if len(catch_all_names) > 1:
+            joined = ", ".join(catch_all_names)
+            raise PolicyValidationError(
+                f"Only one catch-all capability is allowed; found {joined}."
+            )
+
+    def load(self) -> None:
+        self._schemas = {}
+        self._schema_paths = {}
+
+        raw: dict[str, Any] = {}
+        base_mtime: int | None = None
+        policy_mtime: int | None = None
+        loaded_any_policy = False
+
+        if yaml is not None and self._base_policy_path and self._base_policy_path.exists():
+            base_raw = yaml.safe_load(self._base_policy_path.read_text(encoding="utf-8")) or {}
+            raw = _merge_policy_dicts(raw, base_raw)
+            base_mtime = self._base_policy_path.stat().st_mtime_ns
+            loaded_any_policy = True
+
+        if yaml is not None and self._permissions_path.exists():
+            project_raw = yaml.safe_load(self._permissions_path.read_text(encoding="utf-8")) or {}
+            raw = _merge_policy_dicts(raw, project_raw)
+            policy_mtime = self._permissions_path.stat().st_mtime_ns
+            loaded_any_policy = True
+
+        if loaded_any_policy:
+            self.validate_policy_shape(raw)
+            self._raw_policy = raw
+            self._capability_permissions = self.get_capability_contracts(raw)
+            self._resource_permissions = raw.get("resources", {})
+            self._prompt_permissions = raw.get("prompts", {})
+            self._capability_sequences = self.get_capability_sequence_policy(raw)
+            self._runtime_rules = raw.get("runtime_rules", {})
+            self._loaded_mtimes_ns = (policy_mtime, base_mtime)
+        else:
+            logger.warning("Tool permissions file not found: %s", self._permissions_path)
+            self._raw_policy = {}
+            self._capability_permissions = {}
+            self._resource_permissions = {}
+            self._prompt_permissions = {}
+            self._capability_sequences = {}
+            self._runtime_rules = {}
+            self._loaded_mtimes_ns = None
+
+        self.preload_schemas("tool", self._capability_permissions)
+        self.preload_schemas("resource", self._resource_permissions)
+        self.preload_schemas("prompt", self._prompt_permissions)
+        self._loaded_schema_mtimes_ns = self.current_schema_mtimes()
+        logger.info(
+            "Loaded contracts capabilities=%d resources=%d prompts=%d",
+            len(self._capability_permissions),
+            len(self._resource_permissions),
+            len(self._prompt_permissions),
+        )
+
+    def preload_schemas(self, kind: str, contracts: dict[str, Any]) -> None:
+        for name, config in contracts.items():
+            schema_rel = config.get("schema")
+            if not schema_rel:
+                continue
+            schema_path = self._schemas_dir / Path(schema_rel).name
+            alt = Path(schema_rel)
+            selected_path: Path | None = None
+            if schema_path.exists():
+                selected_path = schema_path
+            elif alt.exists():
+                selected_path = alt
+
+            if selected_path is None:
+                raise PolicyValidationError(f"Schema not found for {kind} '{name}': {schema_rel}")
+
+            self._schema_paths[(kind, name)] = selected_path
+            self._schemas[(kind, name)] = json.loads(selected_path.read_text(encoding="utf-8"))
+
+    def current_schema_mtimes(self) -> dict[tuple[str, str], str | None]:
+        return {
+            key: hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+            for key, path in self._schema_paths.items()
+        }
+
+    def maybe_reload(self) -> None:
+        policy_mtime = self._permissions_path.stat().st_mtime_ns if self._permissions_path.exists() else None
+        base_mtime = (
+            self._base_policy_path.stat().st_mtime_ns
+            if self._base_policy_path is not None and self._base_policy_path.exists()
+            else None
+        )
+        current_schema_mtimes = self.current_schema_mtimes()
+        if (
+            self._loaded_mtimes_ns != (policy_mtime, base_mtime)
+            or self._loaded_schema_mtimes_ns != current_schema_mtimes
+        ):
+            self.load()
+
+    def merged_contract(self, kind: str, name: str, base_contract: dict[str, Any]) -> dict[str, Any]:
+        if kind == "tool":
+            runtime = self.get_runtime_capability_rules().get(name, {})
+        else:
+            runtime = self._runtime_rules.get(f"{kind}s", {}).get(name, {})
+        if not runtime:
+            return copy.deepcopy(base_contract)
+        return _deep_merge_dicts(base_contract, runtime)
+
+    def resolve_capability_contract(
+        self,
+        tool_name: str,
+        *,
+        args: dict[str, Any] | None = None,
+        invocation_context: dict[str, Any] | None = None,
+    ) -> ResolvedContract | None:
+        exact_contract = self._capability_permissions.get(tool_name)
+        if isinstance(exact_contract, dict):
+            return ResolvedContract(
+                contract_name=tool_name,
+                contract=self.merged_contract("tool", tool_name, exact_contract),
+                match_type="exact_name",
+            )
+
+        schema_hash = _resolve_invocation_schema_hash(invocation_context)
+        if schema_hash is not None:
+            for name, contract in self._capability_permissions.items():
+                if not isinstance(contract, dict):
+                    continue
+                match_cfg = contract.get("match", {})
+                if not isinstance(match_cfg, dict):
+                    continue
+                if schema_hash in _schema_hashes_from_match(match_cfg):
+                    return ResolvedContract(
+                        contract_name=name,
+                        contract=self.merged_contract("tool", name, contract),
+                        match_type="argument_schema_hash",
+                        schema_hash=schema_hash,
+                    )
+
+        inferred_family, match_score = _infer_tool_family(tool_name, args, invocation_context)
+        if inferred_family is not None:
+            for name, contract in self._capability_permissions.items():
+                if not isinstance(contract, dict):
+                    continue
+                match_cfg = contract.get("match", {})
+                if not isinstance(match_cfg, dict):
+                    continue
+                if inferred_family in _family_names_from_match(match_cfg):
+                    return ResolvedContract(
+                        contract_name=name,
+                        contract=self.merged_contract("tool", name, contract),
+                        match_type="inferred_family",
+                        inferred_family=inferred_family,
+                        match_score=match_score,
+                    )
+
+        for name, contract in self._capability_permissions.items():
+            if not isinstance(contract, dict):
+                continue
+            if _is_catch_all_match(name, contract):
+                return ResolvedContract(
+                    contract_name=name,
+                    contract=self.merged_contract("tool", name, contract),
+                    match_type="catch_all_default",
+                )
+
+        return None
+
+    def resolve_resource_contract(self, resource_uri: str) -> ResolvedContract | None:
+        for name, contract in self._resource_permissions.items():
+            if _find_resource_match(resource_uri, name, contract):
+                return ResolvedContract(
+                    contract_name=name,
+                    contract=self.merged_contract("resource", name, contract),
+                )
+        return None
+
+    def snapshot(self) -> dict[str, Any]:
+        return copy.deepcopy(self._raw_policy)
+
+
+class ContractValidator:
+    """
+    Loads tool, resource, and prompt contracts from YAML policy and enforces them
+    at runtime. The policy file is hot-reloaded when it changes so dynamic rules
+    can be updated without restarting the gateway.
+    """
+
+    def __init__(
+        self,
+        tool_permissions_path: str | Path,
+        schemas_dir: str | Path,
+        *,
+        base_policy_path: str | Path | None = None,
+        unknown_capability_mode: UnknownCapabilityMode = "auto_allow",
+        security_observer: SecurityEventObserver | None = None,
+        event_log_path: str | Path | None = None,
+        audit_log_path: str | Path | None = None,
+    ) -> None:
+        if not _HAS_JSONSCHEMA:
+            raise RuntimeError(
+                "jsonschema is not installed; Layer B refuses to start without schema enforcement."
+            )
+        normalized_unknown_mode = _normalize_unknown_capability_mode(unknown_capability_mode)
+        if normalized_unknown_mode not in _UNKNOWN_CAPABILITY_MODES:
+            expected = ", ".join(_UNKNOWN_CAPABILITY_MODES)
+            raise ValueError(
+                "unknown_capability_mode must be one of "
+                f"{expected}; got {unknown_capability_mode!r}."
+            )
+        self._unknown_capability_mode = normalized_unknown_mode
+        self._policy_store = PolicyStore(
+            tool_permissions_path,
+            schemas_dir,
+            base_policy_path=base_policy_path,
+        )
+        self._approval_manager = ApprovalManager()
+        self._event_recorder = SecurityEventRecorder(
+            security_observer=security_observer,
+            event_log_path=event_log_path,
+            audit_log_path=audit_log_path,
+        )
+        self._load()
+
+    @property
+    def _raw_policy(self) -> dict[str, Any]:
+        return self._policy_store.raw_policy
+
+    @property
+    def _capability_permissions(self) -> dict[str, Any]:
+        return self._policy_store.capability_permissions
+
+    @property
+    def _resource_permissions(self) -> dict[str, Any]:
+        return self._policy_store.resource_permissions
+
+    @property
+    def _prompt_permissions(self) -> dict[str, Any]:
+        return self._policy_store.prompt_permissions
+
+    @property
+    def _capability_sequences(self) -> dict[str, Any]:
+        return self._policy_store.capability_sequences
+
+    @property
+    def _runtime_rules(self) -> dict[str, Any]:
+        return self._policy_store.runtime_rules
+
+    @property
+    def _schemas(self) -> dict[tuple[str, str], Any]:
+        return self._policy_store.schemas
+
+    @property
+    def _pending_approvals(self) -> dict[str, dict[str, Any]]:
+        return self._approval_manager.pending_approvals
+
+    def _emit_security_event(
+        self,
+        *,
+        component_type: str,
+        component_name: str,
+        args: dict[str, Any],
+        result: ContractResult,
+        agent_id: str,
+        framework: str,
+        invocation_context: dict[str, Any] | None = None,
+        decision_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self._event_recorder.emit_component_decision(
+            component_type=component_type,
+            component_name=component_name,
+            args=args,
+            result=result,
+            agent_id=agent_id,
+            framework=framework,
+            invocation_context=invocation_context,
+            decision_metadata=decision_metadata,
         )
 
     def _finalize_result(
@@ -954,191 +1430,31 @@ class ContractValidator:
         )
 
     def _get_capability_contracts(self, policy: dict[str, Any]) -> dict[str, Any]:
-        capabilities = policy.get("capabilities")
-        if isinstance(capabilities, dict) and capabilities:
-            return capabilities
-        tools = policy.get("tools", {})
-        return tools if isinstance(tools, dict) else {}
+        return self._policy_store.get_capability_contracts(policy)
 
     def _get_runtime_capability_rules(self) -> dict[str, Any]:
-        rules = self._runtime_rules.get("capabilities")
-        if isinstance(rules, dict) and rules:
-            return rules
-        tools = self._runtime_rules.get("tools", {})
-        return tools if isinstance(tools, dict) else {}
+        return self._policy_store.get_runtime_capability_rules()
 
     def _get_capability_sequence_policy(self, policy: dict[str, Any]) -> dict[str, Any]:
-        sequences = policy.get("capability_sequences", {})
-        return sequences if isinstance(sequences, dict) else {}
+        return self._policy_store.get_capability_sequence_policy(policy)
 
     def _validate_policy_shape(self, policy: dict[str, Any]) -> None:
-        for top_level in (
-            "capabilities",
-            "tools",
-            "resources",
-            "prompts",
-            "runtime_rules",
-            "capability_sequences",
-        ):
-            value = policy.get(top_level, {})
-            if value is None:
-                continue
-            if not isinstance(value, dict):
-                raise PolicyValidationError(f"Policy section '{top_level}' must be a mapping.")
-
-        valid_scopes = {item.value for item in PermissionScope}
-        valid_risks = {item.value for item in RiskLevel}
-        for name, contract in self._get_capability_contracts(policy).items():
-            if not isinstance(contract, dict):
-                raise PolicyValidationError(f"Capability contract '{name}' must be a mapping.")
-            risk = contract.get("risk", RiskLevel.UNKNOWN.value)
-            if risk not in valid_risks:
-                raise PolicyValidationError(f"Capability '{name}' has invalid risk '{risk}'.")
-            scopes = contract.get("scopes", [])
-            if not isinstance(scopes, list):
-                raise PolicyValidationError(f"Capability '{name}' scopes must be a list.")
-            invalid_scopes = [scope for scope in scopes if scope not in valid_scopes]
-            if invalid_scopes:
-                joined = ", ".join(map(str, invalid_scopes))
-                raise PolicyValidationError(f"Capability '{name}' has invalid scopes: {joined}.")
-            if "approval_required" in contract and not isinstance(contract["approval_required"], bool):
-                raise PolicyValidationError(
-                    f"Capability '{name}' approval_required must be boolean."
-                )
-            if "match" in contract and not isinstance(contract["match"], dict):
-                raise PolicyValidationError(f"Capability '{name}' match must be a mapping.")
-
-        schema_hash_owners: dict[str, str] = {}
-        catch_all_names: list[str] = []
-        inferred_family_owners: dict[str, str] = {}
-        for name, contract in self._get_capability_contracts(policy).items():
-            if not isinstance(contract, dict):
-                continue
-            match_cfg = contract.get("match", {})
-            if not isinstance(match_cfg, dict):
-                continue
-            for schema_hash in _schema_hashes_from_match(match_cfg):
-                owner = schema_hash_owners.get(schema_hash)
-                if owner is not None and owner != name:
-                    raise PolicyValidationError(
-                        "Capability schema hash matches must be unique; "
-                        f"'{name}' and '{owner}' both declare '{schema_hash}'."
-                    )
-                schema_hash_owners[schema_hash] = name
-            for family_name in _family_names_from_match(match_cfg):
-                owner = inferred_family_owners.get(family_name)
-                if owner is not None and owner != name:
-                    raise PolicyValidationError(
-                        "Capability inferred family matches must be unique; "
-                        f"'{name}' and '{owner}' both declare '{family_name}'."
-                    )
-                inferred_family_owners[family_name] = name
-            if _is_catch_all_match(name, contract):
-                catch_all_names.append(name)
-        if len(catch_all_names) > 1:
-            joined = ", ".join(catch_all_names)
-            raise PolicyValidationError(
-                f"Only one catch-all capability is allowed; found {joined}."
-            )
+        self._policy_store.validate_policy_shape(policy)
 
     def _load(self) -> None:
-        self._schemas = {}
-        self._schema_paths = {}
-
-        raw: dict[str, Any] = {}
-        base_mtime: int | None = None
-        policy_mtime: int | None = None
-        loaded_any_policy = False
-
-        if yaml is not None and self._base_policy_path and self._base_policy_path.exists():
-            base_raw = yaml.safe_load(self._base_policy_path.read_text(encoding="utf-8")) or {}
-            raw = _merge_policy_dicts(raw, base_raw)
-            base_mtime = self._base_policy_path.stat().st_mtime_ns
-            loaded_any_policy = True
-
-        if yaml is not None and self._permissions_path.exists():
-            project_raw = yaml.safe_load(self._permissions_path.read_text(encoding="utf-8")) or {}
-            raw = _merge_policy_dicts(raw, project_raw)
-            policy_mtime = self._permissions_path.stat().st_mtime_ns
-            loaded_any_policy = True
-
-        if loaded_any_policy:
-            self._validate_policy_shape(raw)
-            self._raw_policy = raw
-            self._capability_permissions = self._get_capability_contracts(raw)
-            self._resource_permissions = raw.get("resources", {})
-            self._prompt_permissions = raw.get("prompts", {})
-            self._capability_sequences = self._get_capability_sequence_policy(raw)
-            self._runtime_rules = raw.get("runtime_rules", {})
-            self._loaded_mtimes_ns = (policy_mtime, base_mtime)
-        else:
-            logger.warning("Tool permissions file not found: %s", self._permissions_path)
-            self._raw_policy = {}
-            self._capability_permissions = {}
-            self._resource_permissions = {}
-            self._prompt_permissions = {}
-            self._capability_sequences = {}
-            self._runtime_rules = {}
-            self._loaded_mtimes_ns = None
-
-        self._preload_schemas("tool", self._capability_permissions)
-        self._preload_schemas("resource", self._resource_permissions)
-        self._preload_schemas("prompt", self._prompt_permissions)
-        self._loaded_schema_mtimes_ns = self._current_schema_mtimes()
-        logger.info(
-            "Loaded contracts capabilities=%d resources=%d prompts=%d",
-            len(self._capability_permissions),
-            len(self._resource_permissions),
-            len(self._prompt_permissions),
-        )
+        self._policy_store.load()
 
     def _preload_schemas(self, kind: str, contracts: dict[str, Any]) -> None:
-        for name, config in contracts.items():
-            schema_rel = config.get("schema")
-            if not schema_rel:
-                continue
-            schema_path = self._schemas_dir / Path(schema_rel).name
-            alt = Path(schema_rel)
-            selected_path: Path | None = None
-            if schema_path.exists():
-                selected_path = schema_path
-            elif alt.exists():
-                selected_path = alt
-
-            if selected_path is None:
-                raise PolicyValidationError(f"Schema not found for {kind} '{name}': {schema_rel}")
-
-            self._schema_paths[(kind, name)] = selected_path
-            self._schemas[(kind, name)] = json.loads(selected_path.read_text(encoding="utf-8"))
+        self._policy_store.preload_schemas(kind, contracts)
 
     def _current_schema_mtimes(self) -> dict[tuple[str, str], str | None]:
-        return {
-            key: hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
-            for key, path in self._schema_paths.items()
-        }
+        return self._policy_store.current_schema_mtimes()
 
     def _maybe_reload(self) -> None:
-        policy_mtime = self._permissions_path.stat().st_mtime_ns if self._permissions_path.exists() else None
-        base_mtime = (
-            self._base_policy_path.stat().st_mtime_ns
-            if self._base_policy_path is not None and self._base_policy_path.exists()
-            else None
-        )
-        current_schema_mtimes = self._current_schema_mtimes()
-        if (
-            self._loaded_mtimes_ns != (policy_mtime, base_mtime)
-            or self._loaded_schema_mtimes_ns != current_schema_mtimes
-        ):
-            self._load()
+        self._policy_store.maybe_reload()
 
     def _merged_contract(self, kind: str, name: str, base_contract: dict[str, Any]) -> dict[str, Any]:
-        if kind == "tool":
-            runtime = self._get_runtime_capability_rules().get(name, {})
-        else:
-            runtime = self._runtime_rules.get(f"{kind}s", {}).get(name, {})
-        if not runtime:
-            return copy.deepcopy(base_contract)
-        return _deep_merge_dicts(base_contract, runtime)
+        return self._policy_store.merged_contract(kind, name, base_contract)
 
     def _resolve_capability_contract(
         self,
@@ -1147,67 +1463,14 @@ class ContractValidator:
         args: dict[str, Any] | None = None,
         invocation_context: dict[str, Any] | None = None,
     ) -> ResolvedContract | None:
-        exact_contract = self._capability_permissions.get(tool_name)
-        if isinstance(exact_contract, dict):
-            return ResolvedContract(
-                contract_name=tool_name,
-                contract=self._merged_contract("tool", tool_name, exact_contract),
-                match_type="exact_name",
-            )
-
-        schema_hash = _resolve_invocation_schema_hash(invocation_context)
-        if schema_hash is not None:
-            for name, contract in self._capability_permissions.items():
-                if not isinstance(contract, dict):
-                    continue
-                match_cfg = contract.get("match", {})
-                if not isinstance(match_cfg, dict):
-                    continue
-                if schema_hash in _schema_hashes_from_match(match_cfg):
-                    return ResolvedContract(
-                        contract_name=name,
-                        contract=self._merged_contract("tool", name, contract),
-                        match_type="argument_schema_hash",
-                        schema_hash=schema_hash,
-                    )
-
-        inferred_family, match_score = _infer_tool_family(tool_name, args, invocation_context)
-        if inferred_family is not None:
-            for name, contract in self._capability_permissions.items():
-                if not isinstance(contract, dict):
-                    continue
-                match_cfg = contract.get("match", {})
-                if not isinstance(match_cfg, dict):
-                    continue
-                if inferred_family in _family_names_from_match(match_cfg):
-                    return ResolvedContract(
-                        contract_name=name,
-                        contract=self._merged_contract("tool", name, contract),
-                        match_type="inferred_family",
-                        inferred_family=inferred_family,
-                        match_score=match_score,
-                    )
-
-        for name, contract in self._capability_permissions.items():
-            if not isinstance(contract, dict):
-                continue
-            if _is_catch_all_match(name, contract):
-                return ResolvedContract(
-                    contract_name=name,
-                    contract=self._merged_contract("tool", name, contract),
-                    match_type="catch_all_default",
-                )
-
-        return None
+        return self._policy_store.resolve_capability_contract(
+            tool_name,
+            args=args,
+            invocation_context=invocation_context,
+        )
 
     def _resolve_resource_contract(self, resource_uri: str) -> ResolvedContract | None:
-        for name, contract in self._resource_permissions.items():
-            if _find_resource_match(resource_uri, name, contract):
-                return ResolvedContract(
-                    contract_name=name,
-                    contract=self._merged_contract("resource", name, contract),
-                )
-        return None
+        return self._policy_store.resolve_resource_contract(resource_uri)
 
     def _validate_schema(
         self,
@@ -1242,48 +1505,13 @@ class ContractValidator:
         approval_required: bool,
         details: str | None = None,
     ) -> ContractResult | None:
-        if not approval_required:
-            return None
-
-        fingerprint = _approval_fingerprint(component_type, component_name, args)
-
-        if approval_token and approval_token in self._pending_approvals:
-            pending = self._pending_approvals[approval_token]
-            if (
-                pending.get("component_type") == component_type
-                and pending.get("component_name") == component_name
-                and pending.get("fingerprint") == fingerprint
-            ):
-                del self._pending_approvals[approval_token]
-                logger.info(
-                    "Approval granted for %s=%s token=%s",
-                    component_type,
-                    component_name,
-                    approval_token,
-                )
-                return None
-            return ContractResult(
-                decision=ContractDecision.BLOCK,
-                tool_name=component_name,
-                reason_code="APPROVAL_TOKEN_MISMATCH",
-                details="Approval token was issued for a different operation or arguments.",
-                violations=["I1"],
-            )
-
-        token = str(uuid.uuid4())
-        self._pending_approvals[token] = {
-            "component_type": component_type,
-            "component_name": component_name,
-            "fingerprint": fingerprint,
-            "args": copy.deepcopy(args),
-        }
-        return ContractResult(
-            decision=ContractDecision.REQUIRE_APPROVAL,
-            tool_name=component_name,
-            reason_code="APPROVAL_REQUIRED",
-            details=details
-            or f"{component_type.title()} '{component_name}' requires human approval before access.",
-            approval_token=token,
+        return self._approval_manager.issue_or_validate(
+            component_type=component_type,
+            component_name=component_name,
+            args=args,
+            approval_token=approval_token,
+            approval_required=approval_required,
+            details=details,
         )
 
     def _apply_dynamic_arg_rules(
@@ -2295,30 +2523,7 @@ class ContractValidator:
 
         sanitized = _scrub(output)
         logger.debug("Sanitized output for %s", tool_name)
-        self._security_observer.emit(
-            {
-                "event_id": str(uuid.uuid4()),
-                "recorded_at": datetime.now(timezone.utc).isoformat(),
-                "component_type": ComponentType.TOOL.value,
-                "component_name": tool_name,
-                "decision": ContractDecision.ALLOW.value,
-                "reason_code": "OUTPUT_SANITIZED",
-                "details": "Output postconditions applied.",
-                "approval_token": None,
-                "violations": [],
-                "sanitized_args": None,
-                "approval_token_issued": False,
-                "operation_fingerprint": _approval_fingerprint(ComponentType.TOOL.value, tool_name, {}),
-                "agent_id": "postcondition",
-                "framework": "layer_b",
-                "args": {},
-                "invocation_context": {},
-                "trace": {
-                    "policy_match": "postcondition",
-                    "contract_name": tool_name,
-                },
-            }
-        )
+        self._event_recorder.emit_output_sanitized(tool_name)
         return sanitized
 
     def list_tools(self) -> list[str]:
@@ -2376,17 +2581,17 @@ class ContractValidator:
 
     @property
     def event_log_path(self) -> Path | None:
-        return Path(self._event_log_path) if self._event_log_path is not None else None
+        return self._event_recorder.event_log_path
 
     def get_capability_schema(self, capability_name: str) -> dict[str, Any] | None:
         return self.get_schema("capability", capability_name)
 
     def policy_snapshot(self) -> dict[str, Any]:
         self._maybe_reload()
-        return copy.deepcopy(self._raw_policy)
+        return self._policy_store.snapshot()
 
     def pending_approvals_snapshot(self) -> dict[str, Any]:
-        return copy.deepcopy(self._pending_approvals)
+        return self._approval_manager.snapshot()
 
     def reload(self) -> None:
         self._load()
