@@ -330,6 +330,9 @@ def _check_domain(
         return False, f"scheme_not_allowed:{parsed.scheme}"
 
     host = parsed.hostname or ""
+    if parsed.scheme in {"http", "https"} and not host:
+        return False, "missing_hostname"
+
     ssrf_patterns = [
         "169.254.",
         "metadata.google.internal",
@@ -392,13 +395,15 @@ def _check_sql(sql: str, allowlisted_tables: list[str]) -> tuple[bool, str]:
         return False, "sql_must_start_with_select"
 
     if allowlisted_tables:
-        found_table = False
-        for table in allowlisted_tables:
-            if re.search(rf"\b{re.escape(table.upper())}\b", normalized):
-                found_table = True
-                break
-        if not found_table:
+        referenced_tables = _extract_sql_table_names(sql)
+        if not referenced_tables:
             return False, "sql_table_not_allowlisted"
+
+        normalized_allowlist = {_normalize_sql_identifier(table) for table in allowlisted_tables}
+        for table in referenced_tables:
+            leaf_name = table.split(".")[-1]
+            if table not in normalized_allowlist and leaf_name not in normalized_allowlist:
+                return False, f"sql_table_not_allowlisted:{table}"
 
     return True, ""
 
@@ -432,6 +437,37 @@ def _tokenize_text(value: str) -> set[str]:
         piece
         for piece in pieces
         if piece and len(piece) > 1 and piece not in _SEMANTIC_STOPWORDS
+    }
+
+
+def _strip_sql_comments_and_literals(sql: str) -> str:
+    without_block_comments = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    without_line_comments = re.sub(r"--[^\r\n]*", " ", without_block_comments)
+    return re.sub(r"'(?:''|[^'])*'", "''", without_line_comments)
+
+
+def _normalize_sql_identifier(identifier: str) -> str:
+    parts = [part.strip() for part in identifier.split(".") if part.strip()]
+    normalized_parts: list[str] = []
+    for part in parts:
+        cleaned = part.strip("`\"")
+        if cleaned.startswith("[") and cleaned.endswith("]"):
+            cleaned = cleaned[1:-1]
+        normalized_parts.append(cleaned.upper())
+    return ".".join(part for part in normalized_parts if part)
+
+
+def _extract_sql_table_names(sql: str) -> set[str]:
+    sanitized = _strip_sql_comments_and_literals(sql)
+    matches = re.findall(
+        r"\b(?:FROM|JOIN)\s+([A-Za-z0-9_.`\[\]\"]+)",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    return {
+        normalized
+        for match in matches
+        if (normalized := _normalize_sql_identifier(match))
     }
 
 
@@ -752,8 +788,10 @@ class ContractValidator:
         self._capability_sequences: dict[str, Any] = {}
         self._runtime_rules: dict[str, Any] = {}
         self._schemas: dict[tuple[str, str], Any] = {}
+        self._schema_paths: dict[tuple[str, str], Path] = {}
         self._pending_approvals: dict[str, dict[str, Any]] = {}
         self._loaded_mtimes_ns: tuple[int | None, int | None] | None = None
+        self._loaded_schema_mtimes_ns: dict[tuple[str, str], str | None] = {}
         self._event_log_path = Path(event_log_path or audit_log_path) if (event_log_path or audit_log_path) else None
         if security_observer is not None:
             self._security_observer = security_observer
@@ -998,6 +1036,7 @@ class ContractValidator:
 
     def _load(self) -> None:
         self._schemas = {}
+        self._schema_paths = {}
 
         raw: dict[str, Any] = {}
         base_mtime: int | None = None
@@ -1038,6 +1077,7 @@ class ContractValidator:
         self._preload_schemas("tool", self._capability_permissions)
         self._preload_schemas("resource", self._resource_permissions)
         self._preload_schemas("prompt", self._prompt_permissions)
+        self._loaded_schema_mtimes_ns = self._current_schema_mtimes()
         logger.info(
             "Loaded contracts capabilities=%d resources=%d prompts=%d",
             len(self._capability_permissions),
@@ -1061,7 +1101,14 @@ class ContractValidator:
             if selected_path is None:
                 raise PolicyValidationError(f"Schema not found for {kind} '{name}': {schema_rel}")
 
+            self._schema_paths[(kind, name)] = selected_path
             self._schemas[(kind, name)] = json.loads(selected_path.read_text(encoding="utf-8"))
+
+    def _current_schema_mtimes(self) -> dict[tuple[str, str], str | None]:
+        return {
+            key: hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+            for key, path in self._schema_paths.items()
+        }
 
     def _maybe_reload(self) -> None:
         policy_mtime = self._permissions_path.stat().st_mtime_ns if self._permissions_path.exists() else None
@@ -1070,7 +1117,11 @@ class ContractValidator:
             if self._base_policy_path is not None and self._base_policy_path.exists()
             else None
         )
-        if self._loaded_mtimes_ns != (policy_mtime, base_mtime):
+        current_schema_mtimes = self._current_schema_mtimes()
+        if (
+            self._loaded_mtimes_ns != (policy_mtime, base_mtime)
+            or self._loaded_schema_mtimes_ns != current_schema_mtimes
+        ):
             self._load()
 
     def _merged_contract(self, kind: str, name: str, base_contract: dict[str, Any]) -> dict[str, Any]:
@@ -1233,6 +1284,8 @@ class ContractValidator:
         name: str,
         args: dict[str, Any],
         constraints: dict[str, Any],
+        *,
+        approval_token: str | None = None,
     ) -> ContractResult | None:
         for rule in constraints.get("arg_rules", []):
             field = str(rule.get("field", "")).strip()
@@ -1254,7 +1307,7 @@ class ContractValidator:
                         component_type=ComponentType.RULE_OVERRIDE.value,
                         component_name=name,
                         args=args,
-                        approval_token=None,
+                        approval_token=approval_token,
                         approval_required=True,
                         details=details,
                     )
@@ -1669,8 +1722,15 @@ class ContractValidator:
         name: str,
         args: dict[str, Any],
         constraints: dict[str, Any],
+        *,
+        approval_token: str | None = None,
     ) -> ContractResult | None:
-        arg_rule_result = self._apply_dynamic_arg_rules(name, args, constraints)
+        arg_rule_result = self._apply_dynamic_arg_rules(
+            name,
+            args,
+            constraints,
+            approval_token=approval_token,
+        )
         if arg_rule_result is not None:
             return arg_rule_result
 
@@ -1823,6 +1883,7 @@ class ContractValidator:
             tool_name,
             args,
             {"max_body_chars": _UNKNOWN_CAPABILITY_BASELINE_MAX_BODY_CHARS},
+            approval_token=approval_token,
         )
         if baseline_result is not None:
             return baseline_result
@@ -2021,7 +2082,12 @@ class ContractValidator:
                     evidence_ids=evidence_ids,
                     trust_vector=trust_vector,
                 ),
-                lambda: self._validate_common_constraints(tool_name, args, constraints),
+                lambda: self._validate_common_constraints(
+                    tool_name,
+                    args,
+                    constraints,
+                    approval_token=approval_token,
+                ),
                 lambda: self._issue_or_validate_approval(
                     component_type="tool",
                     component_name=tool_name,
@@ -2113,6 +2179,7 @@ class ContractValidator:
                     matched_name,
                     constraint_payload,
                     constraints,
+                    approval_token=approval_token,
                 ),
                 lambda: self._issue_or_validate_approval(
                     component_type="resource",
@@ -2173,7 +2240,12 @@ class ContractValidator:
                     framework=framework,
                     constraints=constraints,
                 ),
-                lambda: self._validate_common_constraints(prompt_name, args, constraints),
+                lambda: self._validate_common_constraints(
+                    prompt_name,
+                    args,
+                    constraints,
+                    approval_token=approval_token,
+                ),
                 lambda: self._issue_or_validate_approval(
                     component_type="prompt",
                     component_name=prompt_name,

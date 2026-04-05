@@ -1,14 +1,22 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+root_str = str(ROOT)
+if root_str not in sys.path:
+    sys.path.insert(0, root_str)
 
 from layerb import LayerBEngine, register_runtime_tool
 
 
 CUSTOM_POLICY_PATH = Path("examples") / "layer_b_custom_policy.yaml"
+_APPROVAL_ENV = "LAYERB_DEMO_APPROVAL"
 
 FILE_READ_SCHEMA = {
     "type": "object",
@@ -92,14 +100,87 @@ def _register_tools() -> None:
     )
 
 
-def _decision_payload(decision: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "decision": decision["decision"],
-        "reason_code": decision["reason_code"],
-        "details": decision["details"],
-        "approval_token": decision["approval_token"],
-        "sanitized_args": decision["sanitized_args"],
-    }
+def _format_json(payload: Any) -> str:
+    return json.dumps(payload, indent=2, default=str)
+
+
+def _print_section(title: str) -> None:
+    line = "=" * len(title)
+    print(f"\n{line}\n{title}\n{line}")
+
+
+def _print_decision(decision: dict[str, Any]) -> None:
+    print(f"Decision      : {decision['decision']}")
+    print(f"Reason code   : {decision['reason_code']}")
+    print(f"Details       : {decision['details'] or '(none)'}")
+    print(f"Approval token: {'issued' if decision['approval_token'] else 'not needed'}")
+    print("Sanitized args:")
+    print(_format_json(decision["sanitized_args"]))
+
+
+def _approval_choice_from_env() -> bool | None:
+    raw = os.getenv(_APPROVAL_ENV, "").strip().lower()
+    if raw in {"1", "y", "yes", "approve", "approved", "allow"}:
+        return True
+    if raw in {"0", "n", "no", "deny", "denied", "block"}:
+        return False
+    return None
+
+
+def _prompt_for_approval(tool_name: str, tool_args: dict[str, Any], decision: dict[str, Any]) -> bool:
+    _print_section("Approval Required")
+    print(f"Tool          : {tool_name}")
+    print(f"Reason code   : {decision['reason_code']}")
+    print(f"Details       : {decision['details'] or '(none)'}")
+    print("Requested args:")
+    print(_format_json(tool_args))
+
+    env_choice = _approval_choice_from_env()
+    if env_choice is not None:
+        choice_label = "APPROVE" if env_choice else "DENY"
+        print(f"Approval choice from {_APPROVAL_ENV}: {choice_label}")
+        return env_choice
+
+    if not sys.stdin.isatty():
+        print(f"No interactive terminal detected. Set {_APPROVAL_ENV}=approve or deny. Defaulting to deny.")
+        return False
+
+    while True:
+        response = input("Approve this tool call? [y/N]: ").strip().lower()
+        if response in {"y", "yes"}:
+            return True
+        if response in {"", "n", "no"}:
+            return False
+        print("Please answer with 'y' or 'n'.")
+
+
+def _maybe_approve(
+    engine: LayerBEngine,
+    *,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    decision: dict[str, Any],
+    invocation_context: dict[str, Any],
+) -> dict[str, Any]:
+    if str(decision["decision"]) != "require_approval":
+        return decision
+
+    if not _prompt_for_approval(tool_name, tool_args, decision):
+        print("Approval denied. Tool execution skipped.")
+        return decision
+
+    approved = engine.explain_decision(
+        tool_name,
+        tool_args,
+        approval_token=decision["approval_token"],
+        invocation_context=invocation_context,
+        framework="custom_yaml_demo",
+        agent_id="layer-b-custom-policy-demo",
+    )
+
+    _print_section("After Approval")
+    _print_decision(approved)
+    return approved
 
 
 def _run_case(
@@ -110,9 +191,13 @@ def _run_case(
     tool_args: dict[str, Any],
     user_prompt: str,
     history: list[str],
-    auto_approve: bool = False,
 ) -> None:
-    print(f"\n=== {title} ===")
+    _print_section(title)
+    print("User prompt:")
+    print(user_prompt)
+    print("\nPlanned tool call:")
+    print(_format_json({"tool": tool_name, "args": tool_args}))
+
     invocation_context = {
         "args_schema": TOOL_SCHEMAS.get(tool_name),
         "workflow": "custom_yaml_demo",
@@ -127,36 +212,31 @@ def _run_case(
         framework="custom_yaml_demo",
         agent_id="layer-b-custom-policy-demo",
     )
-    print("Initial Layer B decision:")
-    print(json.dumps(_decision_payload(decision), indent=2, default=str))
 
-    final_decision = decision
-    if str(decision["decision"]) == "require_approval" and auto_approve:
-        final_decision = engine.explain_decision(
-            tool_name,
-            tool_args,
-            approval_token=decision["approval_token"],
-            invocation_context=invocation_context,
-            framework="custom_yaml_demo",
-            agent_id="layer-b-custom-policy-demo",
-        )
-        print("After demo approval:")
-        print(json.dumps(_decision_payload(final_decision), indent=2, default=str))
+    print("\nInitial Layer B decision:")
+    _print_decision(decision)
+
+    final_decision = _maybe_approve(
+        engine,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        decision=decision,
+        invocation_context=invocation_context,
+    )
 
     if str(final_decision["decision"]) != "allow":
-        print("Tool execution skipped because Layer B did not allow the call.")
-        history.append(tool_name)
+        print("Final outcome : not executed")
         return
 
     if tool_name not in TOOL_IMPLS:
-        print("Layer B allowed the call, but this demo has no local implementation for that tool.")
-        history.append(tool_name)
+        print("Final outcome : approved by policy, but no local demo implementation is registered.")
         return
 
     raw_output = TOOL_IMPLS[tool_name](**tool_args)
     sanitized_output = engine.validator.sanitize_output(tool_name, raw_output)
+    print("Final outcome : executed")
     print("Sanitized tool output:")
-    print(json.dumps(sanitized_output, indent=2, default=str))
+    print(_format_json(sanitized_output))
     history.append(tool_name)
 
 
@@ -175,7 +255,8 @@ def main() -> int:
     )
 
     print(f"Custom policy: {CUSTOM_POLICY_PATH}")
-    print(json.dumps(engine.describe_paths(), indent=2, default=str))
+    print(_format_json(engine.describe_paths()))
+    print(f"Set {_APPROVAL_ENV}=approve or {_APPROVAL_ENV}=deny to run without prompts.")
 
     history: list[str] = []
 
@@ -186,7 +267,6 @@ def main() -> int:
         tool_args={"path": "README.md"},
         user_prompt="Read README.md for a quick summary.",
         history=history,
-        auto_approve=True,
     )
 
     _run_case(
@@ -214,26 +294,24 @@ def main() -> int:
         tool_args={"query": "Layer B defaults"},
         user_prompt="Search project notes for Layer B defaults.",
         history=history,
-        auto_approve=True,
     )
 
-    print("\n=== Recent Layer B Events ===")
-    print(json.dumps(engine.recent_security_events(limit=20), indent=2, default=str))
+    _print_section("Recent Layer B Events")
+    print(_format_json(engine.recent_security_events(limit=20)))
 
-    print("\n=== Contract Candidates ===")
-    print(json.dumps(engine.generate_contract_candidates(), indent=2, default=str))
+    _print_section("Contract Candidates")
+    print(_format_json(engine.generate_contract_candidates()))
 
-    print("\n=== Feedback Report Export ===")
+    _print_section("Feedback Report Export")
     feedback_report = engine.write_feedback_report(
         feedback_report_path,
         min_occurrences=1,
     )
     print(f"Wrote feedback report to: {feedback_report_path}")
-    print(json.dumps(feedback_report, indent=2, default=str))
+    print(_format_json(feedback_report))
 
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
