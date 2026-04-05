@@ -5,8 +5,10 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 import yaml
 
+import layerb.validator as validator_module
 from layerb import ContractDecision, ContractValidator
 
 
@@ -33,6 +35,17 @@ def _make_validator(
         unknown_capability_mode=unknown_capability_mode,
     )
 
+
+
+
+def test_validator_refuses_to_start_without_jsonschema(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(validator_module, '_HAS_JSONSCHEMA', False)
+
+    with pytest.raises(RuntimeError, match='refuses to start without schema enforcement'):
+        _make_validator(
+            'missing-jsonschema',
+            {'version': '1.0', 'capabilities': {}},
+        )
 
 def test_unknown_capability_blocks_http_url_without_hostname() -> None:
     validator = _make_validator(

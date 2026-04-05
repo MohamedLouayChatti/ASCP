@@ -49,12 +49,15 @@ except ImportError:  # pragma: no cover
     ValidationError = Exception  # type: ignore[misc,assignment]
 
     def _jsonschema_validate(*_a, **_kw):
-        pass  # type: ignore[misc]
+        raise RuntimeError("jsonschema is required for Layer B schema enforcement.")  # type: ignore[misc]
 
 
 def validate(instance, schema):  # type: ignore[misc]
-    if _HAS_JSONSCHEMA:
-        _jsonschema_validate(instance=instance, schema=schema)
+    if not _HAS_JSONSCHEMA:
+        raise RuntimeError(
+            "jsonschema is not installed; Layer B refuses to start without schema enforcement."
+        )
+    _jsonschema_validate(instance=instance, schema=schema)
 
 
 logger = logging.getLogger(__name__)
@@ -770,6 +773,10 @@ class ContractValidator:
         event_log_path: str | Path | None = None,
         audit_log_path: str | Path | None = None,
     ) -> None:
+        if not _HAS_JSONSCHEMA:
+            raise RuntimeError(
+                "jsonschema is not installed; Layer B refuses to start without schema enforcement."
+            )
         normalized_unknown_mode = _normalize_unknown_capability_mode(unknown_capability_mode)
         if normalized_unknown_mode not in _UNKNOWN_CAPABILITY_MODES:
             expected = ", ".join(_UNKNOWN_CAPABILITY_MODES)
@@ -2401,5 +2408,6 @@ __all__ = [
     "_check_path_traversal",
     "_check_sql",
 ]
+
 
 

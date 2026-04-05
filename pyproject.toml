@@ -36,7 +36,6 @@ dependencies = [
     "mcp>=1.26.0",
     "opentelemetry-api>=1.28.0",
     "opentelemetry-sdk>=1.28.0",
-    "pytest-cov>=7.1.0",
 ]
 
 [project.optional-dependencies]
@@ -69,11 +68,6 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 python_version = "3.11"
 strict = true
 ignore_missing_imports = true
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-addopts = "-v --cov=layerb --cov-report=term-missing"
 
 [tool.hatch.build.targets.wheel]
 packages = ["layerb"]
