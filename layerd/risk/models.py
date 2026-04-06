@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
-from risk.enums import ContextSufficiency, ContractDecision, DLPAction, RiskLevel
+from .enums import ContextSufficiency, ContractDecision, DLPAction, RiskLevel
 @dataclass
 class RiskInput:
     """Aggregated inputs for risk scoring."""

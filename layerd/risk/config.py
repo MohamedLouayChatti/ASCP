@@ -71,13 +71,12 @@ class LayerCWeights:
     fingerprint_base: float = 0.30          # Linear term
     fingerprint_scale: float = 0.25         # Quadratic term (penalizes high overlap more)
 
-
+# Priorité sécurité > politique > fiabilité
 @dataclass
 class CombinationWeights:
-    """Weights for combining the three layer scores."""
-    layer_a: float = 0.50    # Trust signals
-    layer_b: float = 0.30    # Policy violations
-    layer_c: float = 0.20    # Security leaks
+    layer_a: float = 0.25   # Fiabilité des réponses — important mais pas critique
+    layer_b: float = 0.35   # Politique et contrôle d'accès
+    layer_c: float = 0.40   # Fuites de données — priorité maximale
 
     def __post_init__(self) -> None:
         total = self.layer_a + self.layer_b + self.layer_c
