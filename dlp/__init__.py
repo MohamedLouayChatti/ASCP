@@ -47,10 +47,6 @@ def inject_canaries_into_context(
 
     injected, token, label = _canary_engine.inject_into_context(docs)
 
-    # Fingerprint the original docs (before injection) so the fingerprinter
-    # doesn't accidentally match on the canary token itself.
-    _scanner.fingerprint_docs(docs)
-
     return injected, token, label
 
 
@@ -66,18 +62,13 @@ def scan_tool_args(tool_name: str, args: dict[str, Any]) -> EnforcementDecision:
     """
     Scan pending tool arguments before execution.
 
-    When enable_structured_scan=True, walks the dict recursively so each
-    violation carries a precise JSON path (e.g. "secret_leak:openai_key@body.creds").
-    Otherwise serialises to JSON and scans the flat string (backward-compatible).
+    Serialises to JSON and scans the flat string.
     """
     _ensure_initialized()
     assert _scanner is not None and _enforcer is not None
 
-    if _scanner.config.enable_structured_scan:
-        result = _scanner.scan_structured(args, ScanSurface.TOOL_ARGS)
-    else:
-        serialized = json.dumps(args, default=str)
-        result = _scanner.scan(serialized, ScanSurface.TOOL_ARGS)
+    serialized = json.dumps(args, default=str)
+    result = _scanner.scan(serialized, ScanSurface.TOOL_ARGS)
 
     return _enforcer.enforce(result)
 
@@ -87,9 +78,7 @@ def scan_tool_result(tool_name: str, result_data: Any) -> EnforcementDecision:
     _ensure_initialized()
     assert _scanner is not None and _enforcer is not None
 
-    if _scanner.config.enable_structured_scan and isinstance(result_data, (dict, list)):
-        result = _scanner.scan_structured(result_data, ScanSurface.TOOL_RESULT)
-    elif isinstance(result_data, (dict, list)):
+    if isinstance(result_data, (dict, list)):
         text_to_scan = json.dumps(result_data, default=str)
         result = _scanner.scan(text_to_scan, ScanSurface.TOOL_RESULT)
     else:

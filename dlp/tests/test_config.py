@@ -19,7 +19,6 @@ dlp:
   canary_salt: "my_salt"
   secrets_action: ESCALATE
   pii_action: ALLOW
-  enable_ner: true
   canary_labels:
     - custom_label_1
     - custom_label_2
@@ -37,7 +36,6 @@ dlp:
         try:
             config = load_dlp_config(Path(temp_path))
             self.assertEqual(config.canary_salt, "my_salt")
-            self.assertEqual(config.enable_ner, True)
             self.assertEqual(len(config.secret_patterns), 1)
             self.assertEqual(config.secret_patterns[0].name, "test_secret")
             self.assertEqual(len(config.pii_patterns), 1)
@@ -48,7 +46,6 @@ dlp:
     def test_load_empty_patterns(self):
         content = """
 dlp:
-  enable_ner: true
 """
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".yaml") as f:
             f.write(content)
@@ -139,7 +136,6 @@ dlp:
   canary_salt: "salt"
   secrets_action: BLOCK
   pii_action: REDACT
-  enable_ner: false
   secret_patterns:
     - name: api_key
       regex: "key[0-9]+"
@@ -163,7 +159,6 @@ dlp:
   canary_salt: "salt"
   secrets_action: BLOCK
   pii_action: REDACT
-  enable_ner: false
   pii_patterns:
     - name: phone
       regex: "[0-9]{10}"
@@ -187,7 +182,6 @@ dlp:
   canary_salt: "salt"
   secrets_action: BLOCK
   pii_action: REDACT
-  enable_ner: false
   secret_patterns:
     - name: complete_pattern
       regex: "pattern[0-9]+"
@@ -241,7 +235,6 @@ dlp:
         self.assertEqual(defaults.canary_action, DLPAction.BLOCK)
         self.assertEqual(defaults.secrets_action, DLPAction.BLOCK)
         self.assertEqual(defaults.pii_action, DLPAction.REDACT)
-        self.assertFalse(defaults.enable_ner)
         
         # Verify patterns are present
         self.assertGreater(len(defaults.secret_patterns), 0)
@@ -256,7 +249,6 @@ dlp:
   canary_salt: "test_salt"
   secrets_action: ESCALATE
   pii_action: REDACT
-  enable_ner: false
   secret_patterns:
     - name: secret
       regex: "secret"

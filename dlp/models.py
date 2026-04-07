@@ -41,8 +41,6 @@ class DLPMatch:
     surface: ScanSurface
     # Structured-scan attribution: dot/bracket JSON path ("records[2].user.email")
     source_path: str | None = None
-    # Set by EntropyScanner; None for regex/NER matches
-    entropy_score: float | None = None
 
 
 @dataclass
@@ -56,15 +54,6 @@ class CanaryHit:
 
 
 @dataclass
-class FingerprintHit:
-    """Raised when model output reproduces a significant portion of a source document."""
-    doc_id: str
-    overlap_ratio: float    # fraction of the doc's trigrams found in the output
-    matched_trigrams: int
-    surface: ScanSurface
-
-
-@dataclass
 class DLPResult:
     original_text: str
     clean_text: str
@@ -74,7 +63,6 @@ class DLPResult:
     secret_matches: list[DLPMatch] = field(default_factory=list)
     pii_matches: list[DLPMatch] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
-    fingerprint_hits: list[FingerprintHit] = field(default_factory=list)
 
     @property
     def has_violations(self) -> bool:
@@ -82,7 +70,6 @@ class DLPResult:
             self.canary_hits
             or self.secret_matches
             or self.pii_matches
-            or self.fingerprint_hits
         )
 
     @property

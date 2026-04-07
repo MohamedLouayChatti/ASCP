@@ -135,7 +135,6 @@ class Evaluator:
         """
         if configs is None:
             config = DLPConfig.defaults()
-            config.enable_structured_scan = True
             configs = {"DEFAULT": config}
 
         results = []
@@ -152,15 +151,10 @@ if __name__ == "__main__":
     evaluator = Evaluator(corpus_path)
     
     config_default = DLPConfig.defaults()
-    config_default.enable_structured_scan = True
     
     config_all = DLPConfig.defaults()
-    config_all.enable_entropy = True
     config_all.enable_luhn_validation = True
-    config_all.enable_ner = True
-    config_all.enable_fingerprinting = True
     config_all.enable_context_analysis = True
-    config_all.enable_structured_scan = True
     
     results = evaluator.run_all({"DEFAULT": config_default, "ALL_FEATURES": config_all})
     failed = [r for r in results if not r.passed]
