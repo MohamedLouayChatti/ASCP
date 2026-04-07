@@ -156,6 +156,7 @@ if __name__ == "__main__":
     
     config_all = DLPConfig.defaults()
     config_all.enable_entropy = True
+    config_all.enable_luhn_validation = True
     config_all.enable_ner = True
     config_all.enable_fingerprinting = True
     config_all.enable_context_analysis = True

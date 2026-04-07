@@ -133,7 +133,7 @@ dlp:
   # 2. Luhn Validation
   # Validates the modulo-10 checksum of 'credit_card' matches to massively
   # reduce false positives (e.g. dropping product SKUs or tracking numbers).
-  luhn_validation: true
+  luhn_validation: false
 
   # 3. Contextual Window Analysis
   # Suppresses or downgrades matches that appear surrounded by documentation or

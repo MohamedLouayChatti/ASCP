@@ -61,10 +61,10 @@ class DLPConfig:
     entropy_negation_words: list[str] = field(
         default_factory=lambda: list(_DEFAULT_ENTROPY_NEGATIONS)
     )
-    entropy_action: str = "block"
+    entropy_action: str = "escalate"
 
     # ── Luhn validation ───────────────────────────────────────────────────────
-    enable_luhn_validation: bool = True
+    enable_luhn_validation: bool = False
 
     # ── Contextual window analysis ────────────────────────────────────────────
     enable_context_analysis: bool = False
@@ -127,7 +127,7 @@ class DLPConfig:
             surface_overrides={k: dict(v) for k, v in _DEFAULT_SURFACE_OVERRIDES.items()},
             # New features default to off — existing deployments unaffected
             enable_entropy=False,
-            enable_luhn_validation=True,   # safe to always validate CC patterns
+            enable_luhn_validation=False,
             enable_context_analysis=False,
             format_preserving_redaction=False,
             canary_fuzzy_match=False,
@@ -225,7 +225,7 @@ def load_dlp_config(policy_path: Path) -> DLPConfig:
         entropy_negation_words=ent.get("negation_words", list(_DEFAULT_ENTROPY_NEGATIONS)),
         entropy_action=ent.get("action", "block"),
         # Luhn
-        enable_luhn_validation=bool(d.get("luhn_validation", True)),
+        enable_luhn_validation=bool(d.get("luhn_validation", False)),
         # Context analysis
         enable_context_analysis=ctx.get("enabled", False),
         context_window=int(ctx.get("window", defaults.context_window)),

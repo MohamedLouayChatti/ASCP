@@ -38,7 +38,7 @@ class MatchValidator:
     """
     Post-processing filter applied after regex matching.
 
-    When enable_luhn_validation=True (the default), any match whose
+    When enable_luhn_validation=True, any match whose
     pattern_name is "credit_card" that fails the Luhn checksum is silently
     dropped. This eliminates ~90% of false positives from product SKUs,
     tracking numbers, and other numeric sequences.
