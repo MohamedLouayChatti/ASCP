@@ -61,19 +61,88 @@ dlp:
 
   secret_patterns:
     - name: openai_key
-      regex: "sk-[A-Za-z0-9]{48}"
-        # OpenAI API keys
-        # Format: sk- followed by 48 alphanumeric characters
+      regex: "sk-[A-Za-z0-9]{20,}"
+      action: BLOCK
+
+    - name: anthropic_key
+      regex: "sk-ant-[A-Za-z0-9-]{20,}"
+      action: BLOCK
+
+    - name: stripe_key
+      regex: "(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{24,}"
+      action: BLOCK
 
     - name: aws_access_key
-      regex: "AKIA[0-9A-Z]{16}"
-        # AWS Access Key IDs
-        # Format: AKIA followed by 16 uppercase alphanumeric characters
+      regex: "(?i)(?:aws|access[_-]?key)[\\s:='\\\"]{0,5}(AKIA[0-9A-Z]{16})"
+      action: BLOCK
 
     - name: github_token
-      regex: "ghp_[A-Za-z0-9]{36}"
-        # GitHub Personal Access Tokens
-        # Format: ghp_ followed by 36 alphanumeric characters
+      regex: "gh[ps]_[A-Za-z0-9]{36,}"
+      action: BLOCK
+
+    - name: slack_token
+      regex: "xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[A-Za-z0-9]{24}"
+      action: BLOCK
+
+    - name: google_api_key
+      regex: "AIza[0-9A-Za-z_-]{35}"
+      action: BLOCK
+
+    - name: sendgrid_key
+      regex: "SG\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]{43}"
+      action: BLOCK
+
+    - name: twilio_sid
+      regex: "AC[a-z0-9]{32}"
+      action: BLOCK
+
+    - name: digitalocean_token
+      regex: "dop_v1_[a-f0-9]{64}"
+      action: BLOCK
+
+    - name: generic_api_key
+      regex: "(?i)(api[_-]?key|access[_-]?token|auth[_-]?token)[\\s:='\\\"]{0,5}[a-zA-Z0-9+/_-]{32,64}={0,2}"
+      action: ESCALATE
+
+    - name: password
+      regex: "(?i)(password|passwd|pwd)[\\s:='\\\"]{0,5}.{6,}"
+      action: BLOCK
+
+    - name: secret
+      regex: "(?i)(secret|client_secret)[\\s:='\\\"]{0,5}[a-zA-Z0-9+/_-]{8,}"
+      action: BLOCK
+
+    - name: bearer_token
+      regex: "(?i)(bearer\\s+[a-zA-Z0-9\\-._~+/]+=*)"
+      action: BLOCK
+
+    - name: db_connection_string
+      regex: "(?i)(postgres|mysql|mongodb|redis|amqp|jdbc):\\/\\/[^:\\s]+:[^@\\s]+@[^\\/\\s]+\\/[^\\s]+"
+      action: BLOCK
+
+    - name: jdbc_connection_string
+      regex: "jdbc:[a-z]+:\\/\\/[^\\s]+"
+      action: BLOCK
+
+    - name: mongodb_srv
+      regex: "mongodb\\+srv:\\/\\/[^:\\s]+:[^@\\s]+@[^\\/\\s]+"
+      action: BLOCK
+
+    - name: private_key
+      regex: "-----BEGIN (RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----"
+      action: BLOCK
+
+    - name: env_secrets
+      regex: "(?i)(API_KEY|SECRET_KEY|ACCESS_TOKEN|DB_PASSWORD|PRIVATE_KEY)[\\s:='\\\"]{0,5}[^\\s'\\\"]{8,}"
+      action: BLOCK
+
+    - name: env_style
+      regex: "^[A-Z_]+=(?!.*(example|test|dummy)).+"
+      action: BLOCK
+
+    - name: high_entropy_token
+      regex: "\\b[a-zA-Z0-9_\\-]{32,}\\b"
+      action: ESCALATE
 
 
   # ---------------------------------------------------------------------------
@@ -90,16 +159,23 @@ dlp:
   pii_patterns:
     - name: email
       regex: "[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]*[a-zA-Z0-9-]"
-        # Email addresses (RFC 5322 simplified)
+      action: REDACT
+
+    - name: phone
+      regex: "\\+?[1-9][0-9]{7,14}"
+      action: REDACT
 
     - name: ipv4
       regex: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"
-        # IPv4 addresses
+      action: REDACT
+
+    - name: ssn
+      regex: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+      action: REDACT
 
     - name: credit_card
       regex: "\\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\\b"
-        # Major credit card formats. False positives are naturally filtered
-        # via checksum validation if luhn_validation is enabled below.
+      action: REDACT
 
 
   # ---------------------------------------------------------------------------

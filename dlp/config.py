@@ -9,6 +9,7 @@ from .models import DLPAction
 class PatternDef:
     name: str
     regex: str
+    action: DLPAction | None = None
 
 
 _DEFAULT_SURFACE_OVERRIDES: dict[str, dict[str, str]] = {
@@ -73,16 +74,49 @@ class DLPConfig:
             secrets_action=DLPAction.BLOCK,
             pii_action=DLPAction.REDACT,
             secret_patterns=[
-                PatternDef(name="openai_key",    regex=r"sk-[A-Za-z0-9]{48}"),
-                PatternDef(name="aws_access_key", regex=r"AKIA[0-9A-Z]{16}"),
-                PatternDef(name="github_token",  regex=r"ghp_[A-Za-z0-9]{36}"),
+                PatternDef(name="openai_key",    regex=r"sk-[A-Za-z0-9]{20,}", action=DLPAction.BLOCK),
+                PatternDef(name="anthropic_key", regex=r"sk-ant-[A-Za-z0-9-]{20,}", action=DLPAction.BLOCK),
+                PatternDef(name="stripe_key",    regex=r"(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{24,}", action=DLPAction.BLOCK),
+                PatternDef(name="aws_access_key", regex=r"(?i)(?:aws|access[_-]?key)[\s:='\&quot;]{0,5}(AKIA[0-9A-Z]{16})", action=DLPAction.BLOCK),
+                PatternDef(name="github_token",  regex=r"(?:gh[ps]_|github_pat_)[A-Za-z0-9_]+", action=DLPAction.BLOCK),
+                PatternDef(name="slack_token",   regex=r"xox[baprs]-[0-9]+-[0-9]+-[A-Za-z0-9_]+", action=DLPAction.BLOCK),
+                PatternDef(name="google_api_key", regex=r"AIza[0-9A-Za-z_-]{35}", action=DLPAction.BLOCK),
+                PatternDef(name="sendgrid_key",  regex=r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}", action=DLPAction.BLOCK),
+                PatternDef(name="twilio_sid",    regex=r"AC[a-z0-9]{32}", action=DLPAction.BLOCK),
+                PatternDef(name="digitalocean_token", regex=r"dop_v1_[a-f0-9]{64}", action=DLPAction.BLOCK),
+                PatternDef(name="generic_api_key", regex=r"(?i)(api[_-]?key|access[_-]?token|auth[_-]?token)[\s:='\&quot;]{0,5}[a-zA-Z0-9+/_-]{32,64}={0,2}", action=DLPAction.ESCALATE),
+                PatternDef(name="password",      regex=r"(?i)(password|passwd|pwd)[\s:='\&quot;]{0,5}.{6,}", action=DLPAction.BLOCK),
+                PatternDef(name="secret",        regex=r"(?i)(secret|client_secret)[\s:='\&quot;]{0,5}[a-zA-Z0-9+/_-]{8,}", action=DLPAction.BLOCK),
+                PatternDef(name="bearer_token",  regex=r"(?i)(bearer\s+[a-zA-Z0-9\-._~+/]+=*)", action=DLPAction.BLOCK),
+                PatternDef(name="db_connection_string", regex=r"(?i)(postgres|mysql|mongodb|redis|amqp|jdbc):\/\/[^:\s]+:[^@\s]+@[^\/\s]+\/[^\s]+", action=DLPAction.BLOCK),
+                PatternDef(name="jdbc_connection_string", regex=r"jdbc:[a-z]+:\/\/[^\s]+", action=DLPAction.BLOCK),
+                PatternDef(name="mongodb_srv",   regex=r"mongodb\+srv:\/\/[^:\s]+:[^@\s]+@[^\/\s]+", action=DLPAction.BLOCK),
+                PatternDef(name="private_key",   regex=r"-----BEGIN (RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----", action=DLPAction.BLOCK),
+                PatternDef(name="env_secrets",   regex=r"(?i)(API_KEY|SECRET_KEY|ACCESS_TOKEN|DB_PASSWORD|PRIVATE_KEY)[\s:='\&quot;]{0,5}[^\s'\&quot;]{8,}", action=DLPAction.BLOCK),
+                PatternDef(name="env_style",     regex=r"^[A-Z_]+=(?!.*(example|test|dummy)).+", action=DLPAction.BLOCK),
+                PatternDef(name="high_entropy_token", regex=r"\b[a-zA-Z0-9_\-]{32,}\b", action=DLPAction.ESCALATE),
             ],
             pii_patterns=[
                 PatternDef(
                     name="email",
                     regex=r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]*[a-zA-Z0-9-]",
+                    action=DLPAction.REDACT,
                 ),
-                PatternDef(name="ipv4",  regex=r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+                PatternDef(
+                    name="phone",
+                    regex=r"\+?[1-9]\d{1,3}[-.\s]?\(?\d+\)?[-.\s]?\d+[-.\s]?\d+",
+                    action=DLPAction.REDACT,
+                ),
+                PatternDef(
+                    name="ipv4",
+                    regex=r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
+                    action=DLPAction.REDACT,
+                ),
+                PatternDef(
+                    name="ssn",
+                    regex=r"\b\d{3}-\d{2}-\d{4}\b",
+                    action=DLPAction.REDACT,
+                ),
                 # Credit card — enabled by default; Luhn validation removes false positives
                 PatternDef(
                     name="credit_card",
@@ -90,6 +124,7 @@ class DLPConfig:
                         r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}"
                         r"|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b"
                     ),
+                    action=DLPAction.REDACT,
                 ),
             ],
             canary_labels=["api_credential_mock", "db_password", "sys_admin_token"],
@@ -134,11 +169,19 @@ def load_dlp_config(policy_path: Path) -> DLPConfig:
     d = data.get("dlp") or {}
 
     secret_patterns = [
-        PatternDef(name=p.get("name", "unknown"), regex=p.get("regex", ""))
+        PatternDef(
+            name=p.get("name", "unknown"),
+            regex=p.get("regex", ""),
+            action=_parse_action(p["action"]) if "action" in p else None,
+        )
         for p in d.get("secret_patterns", [])
     ]
     pii_patterns = [
-        PatternDef(name=p.get("name", "unknown"), regex=p.get("regex", ""))
+        PatternDef(
+            name=p.get("name", "unknown"),
+            regex=p.get("regex", ""),
+            action=_parse_action(p["action"]) if "action" in p else None,
+        )
         for p in d.get("pii_patterns", [])
     ]
 
