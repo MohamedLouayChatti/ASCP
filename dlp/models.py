@@ -6,6 +6,7 @@ class ScanSurface(Enum):
     OUTPUT = "OUTPUT"
     TOOL_ARGS = "TOOL_ARGS"
     TOOL_RESULT = "TOOL_RESULT"
+    SYSTEM_PROMPT = "SYSTEM_PROMPT"  # injection only; not a scan surface
 
 
 class DLPAction(Enum):

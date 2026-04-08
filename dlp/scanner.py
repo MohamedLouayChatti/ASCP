@@ -37,11 +37,14 @@ class DLPScanner:
         2. Regex scan → Luhn validation → context analysis
         3. Compute action, build redacted text
         """
-        # 1. Canary
+        # 1. Canary — any hit is always BLOCK regardless of policy config.
+        # Canary tokens should NEVER cross an external boundary; detection means
+        # critical system failure (prompt injection, instruction override, or
+        # data exfiltration via tool call).
         canary_hits = self.canary_engine.detect(text, surface)
         current_action = DLPAction.ALLOW
         if canary_hits:
-            current_action = max(current_action, self.config.canary_action)
+            current_action = DLPAction.BLOCK
 
         secret_matches: list[DLPMatch] = []
         pii_matches: list[DLPMatch] = []
@@ -96,4 +99,3 @@ class DLPScanner:
             pii_matches=pii_matches,
             violations=violations,
         )
-

@@ -17,13 +17,13 @@ class TestIntegration(unittest.TestCase):
         # Re-init before each test to guarantee a clean, known state.
         dlp.init(Path("no_such_file.yaml"))
 
-    def test_canary_injection_and_detection(self):
+    def test_dlp_canary_ref_injection_and_detection(self):
         # Inject standard docs
         docs = [{"title": "doc1", "text": "This is public info."}]
         injected, token, label = dlp.inject_canaries_into_context(docs)
 
         self.assertEqual(len(injected), 1)
-        self.assertIn("Note: Session reference [CANARY-", injected[0]["text"])
+        self.assertIn("Note: Internal reference [CANARY-", injected[0]["text"])
         self.assertIsNotNone(token)
         self.assertIsNotNone(label)
 
