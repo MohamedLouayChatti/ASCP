@@ -65,7 +65,6 @@ env/
 # Data files
 *.csv
 *.xlsx
-*.json
 data/
 datasets/
 *.pkl

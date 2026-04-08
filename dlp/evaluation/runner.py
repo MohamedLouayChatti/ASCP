@@ -44,7 +44,6 @@ from dlp.models import DLPAction, EnforcementDecision
 @dataclass
 class TestCase:
     id: str
-    category: str
     surface: str
     input_payload: Any
     expected_action: str
@@ -56,7 +55,6 @@ class TestCase:
 @dataclass
 class EvaluationResult:
     case_id: str
-    category: str
     surface: str
     config_type: str
     expected_action: str
@@ -103,7 +101,6 @@ class Evaluator:
             cases.append(
                 TestCase(
                     id=raw["id"],
-                    category=raw["category"],
                     surface=raw["surface"],
                     input_payload=raw["input_payload"],
                     expected_action=raw["expected_action"],
@@ -182,7 +179,6 @@ class Evaluator:
 
         return EvaluationResult(
             case_id=case.id,
-            category=case.category,
             surface=case.surface,
             config_type=config_type,
             expected_action=case.expected_action,
