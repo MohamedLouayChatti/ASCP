@@ -13,7 +13,10 @@ dlp:
   # If a canary token appears in system output, it indicates a potential data leak.
   # ---------------------------------------------------------------------------
 
-  canary_action: BLOCK
+  # ── ML / Pipeline Options ────────
+ml_confidence_threshold: 0.6
+
+canary_action: BLOCK
     # Enforcement action when a canary token is detected.
     # Options: ALLOW, REDACT, ESCALATE, BLOCK
     # Recommended: BLOCK (canary leaks indicate serious security violations)

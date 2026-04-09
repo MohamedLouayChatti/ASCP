@@ -11,9 +11,10 @@ class ScanSurface(Enum):
 
 class DLPAction(Enum):
     ALLOW = 0
-    REDACT = 1
-    ESCALATE = 2
-    BLOCK = 3
+    PASS_TO_ML = 1
+    REDACT = 2
+    ESCALATE = 3
+    BLOCK = 4
 
     @property
     def priority(self) -> int:
@@ -31,6 +32,14 @@ class DLPAction(Enum):
     def __ge__(self, other: "DLPAction") -> bool:
         return self.priority >= other.priority
 
+
+@dataclass
+class PatternResult:
+    action: str  # "BLOCK" | "REDACT" | "PASS_TO_ML"
+    secrets: list["DLPMatch"]
+    pii: list["DLPMatch"]
+    confidence: str  # "high" | "medium" | "low"
+    redacted_text: str = ""
 
 @dataclass
 class DLPMatch:

@@ -15,10 +15,25 @@ the trigger wins and the match is kept at its original action.
 """
 
 from dataclasses import replace
+import re
 
 from .models import DLPMatch, DLPAction
 from .config import DLPConfig
 
+EXAMPLE_KEYWORDS = [
+    r"\bexample\b", r"\bdummy\b", r"\bsample\b", r"\bplaceholder\b",
+    r"\bdocumentation\b", r"\btutorial\b", r"\bmock\b"
+]
+
+def contains_example_context(text: str) -> bool:
+    """
+    Check if the text implies an example/dummy context to downgrade confidence.
+    """
+    txt_lower = text.lower()
+    for kw in EXAMPLE_KEYWORDS:
+        if re.search(kw, txt_lower):
+            return True
+    return False
 
 class ContextAnalyzer:
     """

@@ -2,8 +2,10 @@ import re
 from collections import defaultdict
 from typing import Any
 
-from .models import DLPAction, DLPMatch, ScanSurface
+from .models import DLPAction, DLPMatch, ScanSurface, PatternResult
 from .config import DLPConfig
+from .context import contains_example_context
+from .validators import luhn_check
 
 
 # Known structural prefixes for format-preserving redaction
@@ -111,37 +113,85 @@ class PatternEngine:
 
     # ── Scanning ──────────────────────────────────────────────────────────────
 
-    def scan_text(self, text: str, surface: ScanSurface) -> tuple[list[DLPMatch], str]:
+    def scan(self, text: str, surface: ScanSurface) -> PatternResult:
         """
         Scan a string against all configured patterns.
-        Returns (matches, redacted_text). Redaction uses format-preserving or
-        bracket placeholders depending on config.format_preserving_redaction.
+        Returns PatternResult with matches separated by category and appropriate actions/confidence.
+        - Secrets → BLOCK (high confidence)
+        - Valid PII (Luhn check for credit cards) → REDACT (high confidence)
+        - Invalid/example context PII → PASS_TO_ML (low/medium confidence)
         """
-        matches: list[DLPMatch] = []
+        secrets: list[DLPMatch] = []
+        pii: list[DLPMatch] = []
         redactions: list[tuple[int, int, str]] = []
-
+        
         for name, pattern, action, category in self._patterns:
             for m in pattern.finditer(text):
                 matched_str = m.group(0)
                 start, end = m.span()
-                matches.append(
-                    DLPMatch(
-                        pattern_name=name,
-                        category=category,
-                        action=action,
-                        value=matched_str,
-                        spans=[(start, end)],
-                        surface=surface,
-                    )
+                
+                match_action = action
+                
+                if name == "credit_card":
+                    if luhn_check(matched_str):
+                        match_action = DLPAction.REDACT
+                    else:
+                        match_action = DLPAction.PASS_TO_ML
+                
+                # Context override
+                context_window = text[max(0, start-100):min(len(text), end+100)]
+                if contains_example_context(context_window):
+                    match_action = DLPAction.PASS_TO_ML
+                
+                # We never ALLOW in pattern engine explicitly
+                
+                match_obj = DLPMatch(
+                    pattern_name=name,
+                    category=category,
+                    action=match_action,
+                    value=matched_str,
+                    spans=[(start, end)],
+                    surface=surface,
                 )
-                if action == DLPAction.REDACT:
+                
+                if category == "secret":
+                    secrets.append(match_obj)
+                else:
+                    pii.append(match_obj)
+                    
+                if match_action == DLPAction.REDACT:
                     if self.config.format_preserving_redaction:
                         placeholder = self.format_preserve(matched_str, name)
                     else:
                         placeholder = f"[REDACTED_{category}_{name}]"
                     redactions.append((start, end, placeholder))
 
-        if not redactions:
-            return matches, text
+        # Decide final action and confidence
+        has_block = any(m.action == DLPAction.BLOCK for m in secrets + pii)
+        has_redact = any(m.action == DLPAction.REDACT for m in secrets + pii)
+        has_pass_ml = any(m.action == DLPAction.PASS_TO_ML for m in secrets + pii)
 
-        return matches, self.apply_redactions(text, redactions)
+        if has_block:
+            final_action = "BLOCK"
+            final_confidence = "high"
+        elif has_redact:
+            final_action = "REDACT"
+            final_confidence = "medium"
+        elif has_pass_ml or len(secrets + pii) > 0:
+            final_action = "PASS_TO_ML"
+            final_confidence = "low"
+        else:
+            final_action = "PASS_TO_ML"
+            final_confidence = "high" # nothing to block
+
+        redacted_text = text
+        if redactions:
+            redacted_text = self.apply_redactions(text, redactions)
+
+        return PatternResult(
+            action=final_action,
+            secrets=secrets,
+            pii=pii,
+            confidence=final_confidence,
+            redacted_text=redacted_text
+        )

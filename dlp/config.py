@@ -65,6 +65,9 @@ class DLPConfig:
     canary_fuzzy_match: bool = False
     canary_fuzzy_overlap: float = 0.8
 
+    # ── ML Confidence ─────────────────────────────────────────────────────────
+    ml_confidence_threshold: float = 0.6
+
     @classmethod
     def defaults(cls) -> "DLPConfig":
         """Safe defaults used when no policy file is provided."""
@@ -237,5 +240,7 @@ def load_dlp_config(policy_path: Path) -> DLPConfig:
         # Fuzzy canary
         canary_fuzzy_match=bool(d.get("canary_fuzzy_match", False)),
         canary_fuzzy_overlap=float(d.get("canary_fuzzy_overlap", 0.8)),
+        # ML pipeline
+        ml_confidence_threshold=float(d.get("ml_confidence_threshold", 0.6)),
 
     )

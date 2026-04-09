@@ -30,72 +30,82 @@ class DLPScanner:
     # ── Main scan() ───────────────────────────────────────────────────────────
 
     def scan(self, text: str, surface: ScanSurface) -> DLPResult:
-        """
-        Full scanning pipeline on a plain string:
+        from .features import extract_features
+        from .ml import classify
 
-        1. Canary detection (exact + optional fuzzy)
-        2. Regex scan → Luhn validation → context analysis
-        3. Compute action, build redacted text
-        """
-        # 1. Canary — any hit is always BLOCK regardless of policy config.
-        # Canary tokens should NEVER cross an external boundary; detection means
-        # critical system failure (prompt injection, instruction override, or
-        # data exfiltration via tool call).
+        # 1. Canary (HARD STOP)
         canary_hits = self.canary_engine.detect(text, surface)
-        current_action = DLPAction.ALLOW
         if canary_hits:
-            current_action = DLPAction.BLOCK
+            violations = []
+            for ch in canary_hits:
+                prefix = "canary_fuzzy_leak" if ch.fuzzy else "canary_leak"
+                violations.append(f"{prefix}:{ch.label}")
+            return DLPResult(
+                original_text=text,
+                clean_text="[BLOCKED_BY_POLICY]",
+                action=DLPAction.BLOCK,
+                surface=surface,
+                canary_hits=canary_hits,
+                violations=violations,
+            )
 
-        secret_matches: list[DLPMatch] = []
-        pii_matches: list[DLPMatch] = []
-        all_redactions: list[tuple[int, int, str]] = []
-
-        # 2a. Regex
-        regex_matches, _ = self.pattern_engine.scan_text(text, surface)
-
-        # 2b. Luhn validation (drop invalid credit card matches)
-        regex_matches = self.match_validator.filter(regex_matches)
-
-        # 2c. Context window analysis
-        if self.context_analyzer is not None:
-            regex_matches = self.context_analyzer.filter(regex_matches, text)
-
-        for m in regex_matches:
-            if m.action == DLPAction.REDACT:
-                for span in m.spans:
-                    all_redactions.append((span[0], span[1], self._placeholder(m)))
-            if m.category == "secret":
-                secret_matches.append(m)
-                current_action = max(current_action, m.action)
-            elif m.category == "pii":
-                pii_matches.append(m)
-                current_action = max(current_action, m.action)
-
-        # 3. Compute output
-        redacted = PatternEngine.apply_redactions(text, all_redactions)
-
+        # 2. Pattern Engine
+        pattern_result = self.pattern_engine.scan(text, surface)
+        
+        secrets = pattern_result.secrets
+        pii = pattern_result.pii
+        
         violations = []
-        for ch in canary_hits:
-            prefix = "canary_fuzzy_leak" if ch.fuzzy else "canary_leak"
-            violations.append(f"{prefix}:{ch.label}")
-        for sm in secret_matches:
+        for sm in secrets:
             violations.append(f"secret_leak:{sm.pattern_name}")
-        for pm in pii_matches:
+        for pm in pii:
             violations.append(f"pii_leak:{pm.pattern_name}")
 
+        if pattern_result.action == "BLOCK":
+            return DLPResult(
+                original_text=text,
+                clean_text="[BLOCKED_BY_POLICY]",
+                action=DLPAction.BLOCK,
+                surface=surface,
+                secret_matches=secrets,
+                pii_matches=pii,
+                violations=violations,
+            )
+
+        if pattern_result.action == "REDACT":
+            return DLPResult(
+                original_text=text,
+                clean_text=pattern_result.redacted_text,
+                action=DLPAction.REDACT,
+                surface=surface,
+                secret_matches=secrets,
+                pii_matches=pii,
+                violations=violations,
+            )
+
+        # 3. Feature Extraction
+        features = extract_features(text, surface)
+
+        # 4. ML Classification (placeholder)
+        label_action, confidence = classify(text, surface, features)
+
+        # 5. Policy Resolution
+        final_action = label_action
+        if confidence < self.config.ml_confidence_threshold:
+            final_action = DLPAction.ESCALATE
+
         clean_text = text
-        if current_action == DLPAction.BLOCK:
+        if final_action == DLPAction.BLOCK:
             clean_text = "[BLOCKED_BY_POLICY]"
-        elif current_action == DLPAction.REDACT:
-            clean_text = redacted
+        elif final_action == DLPAction.REDACT:
+            clean_text = pattern_result.redacted_text
 
         return DLPResult(
             original_text=text,
             clean_text=clean_text,
-            action=current_action,
+            action=final_action,
             surface=surface,
-            canary_hits=canary_hits,
-            secret_matches=secret_matches,
-            pii_matches=pii_matches,
+            secret_matches=secrets,
+            pii_matches=pii,
             violations=violations,
         )
