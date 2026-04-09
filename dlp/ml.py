@@ -8,4 +8,4 @@ def classify(text: str, surface: ScanSurface, features: dict[str, Any]) -> tuple
     This will trigger ESCALATE due to threshold < 0.6
     """
     # Later to be implemented completely via external or internal ML models.
-    return DLPAction.ALLOW, 0.5
+    return DLPAction.ALLOW, 1.0

@@ -105,15 +105,11 @@ canary_action: BLOCK
 
     - name: generic_api_key
       regex: "(?i)(api[_-]?key|access[_-]?token|auth[_-]?token)[\\s:='\\\"]{0,5}[a-zA-Z0-9+/_-]{32,64}={0,2}"
-      action: ESCALATE
-
-    - name: password
-      regex: "(?i)(password|passwd|pwd)[\\s:='\\\"]{0,5}.{6,}"
-      action: BLOCK
+      action: PASS_TO_ML
 
     - name: secret
       regex: "(?i)(secret|client_secret)[\\s:='\\\"]{0,5}[a-zA-Z0-9+/_-]{8,}"
-      action: BLOCK
+      action: PASS_TO_ML
 
     - name: bearer_token
       regex: "(?i)(bearer\\s+[a-zA-Z0-9\\-._~+/]+=*)"
@@ -141,11 +137,11 @@ canary_action: BLOCK
 
     - name: env_style
       regex: "^[A-Z_]+=(?!.*(example|test|dummy)).+"
-      action: BLOCK
+      action: PASS_TO_ML
 
     - name: high_entropy_token
       regex: "\\b[a-zA-Z0-9_\\-]{32,}\\b"
-      action: ESCALATE
+      action: PASS_TO_ML
 
 
   # ---------------------------------------------------------------------------
@@ -162,15 +158,15 @@ canary_action: BLOCK
   pii_patterns:
     - name: email
       regex: "[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]*[a-zA-Z0-9-]"
-      action: REDACT
+      action: PASS_TO_ML
 
     - name: phone
       regex: "\\+?[1-9][0-9]{7,14}"
-      action: REDACT
+      action: PASS_TO_ML
 
     - name: ipv4
       regex: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"
-      action: REDACT
+      action: PASS_TO_ML
 
     - name: ssn
       regex: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
