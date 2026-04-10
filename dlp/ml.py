@@ -18,10 +18,12 @@ class MLInferenceEngine:
         from transformers import AutoModelForCausalLM, AutoTokenizer
         from peft import PeftModel
 
-        base_model = getattr(self.config, "ml_base_model", "unsloth/mistral-7b-instruct-v0.2-bnb-4bit")
+        base_model = getattr(self.config, "ml_base_model", "unsloth/phi-2")
         lora_path = getattr(self.config, "ml_lora_path", None)
 
         self.tokenizer = AutoTokenizer.from_pretrained(base_model)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         
         # Determine strict generation config (deterministic)
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -29,6 +31,7 @@ class MLInferenceEngine:
             device_map="auto",
             torch_dtype=getattr(torch, "float16", torch.float32),
             low_cpu_mem_usage=True,
+            trust_remote_code=True,
         )
         
         if lora_path and os.path.exists(lora_path):
@@ -122,12 +125,14 @@ IMPORTANT:
 [TEXT]
 {text}"""
 
-        convo = [
-            {"role": "user", "content": prompt}
-        ]
-        
-        # Apply chat template correctly to generate input ids
-        formatted = self.tokenizer.apply_chat_template(convo, tokenize=False, add_generation_prompt=True)
+        # Graceful fallback if the tokenizer does not natively support chat_template
+        if self.tokenizer.chat_template is not None:
+            convo = [{"role": "user", "content": prompt}]
+            formatted = self.tokenizer.apply_chat_template(convo, tokenize=False, add_generation_prompt=True)
+        else:
+            # Fallback for models like Phi-2 
+            formatted = f"Instruct: {prompt}\nOutput: "
+
         inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
         
         import torch
@@ -135,7 +140,6 @@ IMPORTANT:
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=10,
-                # use temperature = 0 by dropping sample params or explicit small value usually do_sample=False
                 do_sample=False,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
@@ -143,6 +147,9 @@ IMPORTANT:
         # strip prompt tokens
         generated_id = outputs[0][inputs['input_ids'].shape[-1]:]
         generated_text = self.tokenizer.decode(generated_id, skip_special_tokens=True).strip()
+        
+        # In case the model outputs extra whitespace or a newline before the actual word
+        generated_text = generated_text.split('\n')[0].strip()
         return generated_text
 
 
