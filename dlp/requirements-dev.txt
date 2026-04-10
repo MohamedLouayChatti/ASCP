@@ -11,3 +11,12 @@ types-PyYAML>=6.0
 jupyter>=1.0.0
 pandas>=2.0.0
 matplotlib>=3.7.0
+
+# ML Inference
+torch>=2.0.0
+transformers>=4.40.0
+peft>=0.10.0
+accelerate>=0.29.0
+bitsandbytes>=0.43.0
+
+

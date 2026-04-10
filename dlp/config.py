@@ -65,8 +65,9 @@ class DLPConfig:
     canary_fuzzy_match: bool = False
     canary_fuzzy_overlap: float = 0.8
 
-    # ── ML Confidence ─────────────────────────────────────────────────────────
-    ml_confidence_threshold: float = 0.6
+    # ── ML Inference ──────────────────────────────────────────────────────────
+    ml_base_model: str = "unsloth/mistral-7b-instruct-v0.2-bnb-4bit"
+    ml_lora_path: str | None = None
 
     @classmethod
     def defaults(cls) -> "DLPConfig":
@@ -240,6 +241,7 @@ def load_dlp_config(policy_path: Path) -> DLPConfig:
         canary_fuzzy_match=bool(d.get("canary_fuzzy_match", False)),
         canary_fuzzy_overlap=float(d.get("canary_fuzzy_overlap", 0.8)),
         # ML pipeline
-        ml_confidence_threshold=float(d.get("ml_confidence_threshold", 0.6)),
+        ml_base_model=str(d.get("ml_base_model", "unsloth/mistral-7b-instruct-v0.2-bnb-4bit")),
+        ml_lora_path=d.get("ml_lora_path"),
 
     )

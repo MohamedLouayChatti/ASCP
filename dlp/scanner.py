@@ -86,14 +86,10 @@ class DLPScanner:
         # 3. Feature Extraction
         features = extract_features(text, surface)
 
-        # 4. ML Classification (placeholder)
-        label_action, confidence = classify(text, surface, features)
+        # 4. ML Classification
+        final_action = classify(text, surface, features, config=self.config)
 
         # 5. Policy Resolution
-        final_action = label_action
-        if confidence < self.config.ml_confidence_threshold:
-            final_action = DLPAction.ESCALATE
-
         clean_text = text
         if final_action == DLPAction.BLOCK:
             clean_text = "[BLOCKED_BY_POLICY]"

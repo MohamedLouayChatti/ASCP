@@ -159,7 +159,9 @@ class PatternEngine:
                 else:
                     pii.append(match_obj)
                     
-                if match_action == DLPAction.REDACT:
+                # Always prep redaction placeholder, even if action is PASS_TO_ML.
+                # If ML later decides to REDACT, scanner uses this pre-computed text.
+                if match_action in (DLPAction.REDACT, DLPAction.PASS_TO_ML):
                     if self.config.format_preserving_redaction:
                         placeholder = self.format_preserve(matched_str, name)
                     else:

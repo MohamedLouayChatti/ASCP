@@ -241,17 +241,19 @@ dlp:
 
     def test_multiple_scans_per_session(self):
         """Test that multiple consecutive scans work correctly with canary state."""
-        docs, token, label = dlp.inject_canaries_into_context([{"text": "doc"}])
+        import unittest.mock
+        with unittest.mock.patch('dlp.ml.classify', return_value=DLPAction.ALLOW):
+            docs, token, label = dlp.inject_canaries_into_context([{"text": "doc"}])
 
-        decision1 = dlp.scan_output("I will not leak the token")
-        self.assertEqual(decision1.action, DLPAction.ALLOW)
+            decision1 = dlp.scan_output("I will not leak the token")
+            self.assertEqual(decision1.action, DLPAction.ALLOW)
 
-        decision2 = dlp.scan_output(f"Actually here is: {token}")
-        self.assertEqual(decision2.action, DLPAction.BLOCK)
-        self.assertTrue(decision2.should_block)
+            decision2 = dlp.scan_output(f"Actually here is: {token}")
+            self.assertEqual(decision2.action, DLPAction.BLOCK)
+            self.assertTrue(decision2.should_block)
 
-        decision3 = dlp.scan_output("Just regular text now")
-        self.assertEqual(decision3.action, DLPAction.ALLOW)
+            decision3 = dlp.scan_output("Just regular text now")
+            self.assertEqual(decision3.action, DLPAction.ALLOW)
 
     def test_tool_args_secret_always_blocks(self):
         """
