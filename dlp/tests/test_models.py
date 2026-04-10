@@ -15,9 +15,10 @@ class TestDLPActionComparison:
     def test_action_priority_values(self):
         """Verify that action priority values are correct and ordered."""
         assert DLPAction.ALLOW.priority == 0
-        assert DLPAction.REDACT.priority == 1
-        assert DLPAction.ESCALATE.priority == 2
-        assert DLPAction.BLOCK.priority == 3
+        assert DLPAction.PASS_TO_ML.priority == 1
+        assert DLPAction.REDACT.priority == 2
+        assert DLPAction.ESCALATE.priority == 3
+        assert DLPAction.BLOCK.priority == 4
 
     def test_action_less_than_operator(self):
         """Test __lt__ operator for priority ordering."""

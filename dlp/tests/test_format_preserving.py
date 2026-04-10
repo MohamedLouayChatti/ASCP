@@ -72,13 +72,17 @@ class TestFormatPreserve(unittest.TestCase):
     def test_format_preserving_scan_text(self):
         """Integration: scan_text uses format_preserve when config flag is on."""
         from dlp.config import DLPConfig
-        from dlp.models import ScanSurface
+        from dlp.models import ScanSurface, DLPAction
 
         cfg = DLPConfig.defaults()
         cfg.format_preserving_redaction = True
+        for p in cfg.pii_patterns:
+            if p.name == "email":
+                p.action = DLPAction.REDACT
         engine = PatternEngine(cfg)
 
-        _, redacted = engine.scan_text("Contact: user@company.com", ScanSurface.OUTPUT)
+        result = engine.scan("Contact: user@company.com", ScanSurface.OUTPUT)
+        redacted = result.redacted_text
         self.assertIn("@", redacted)
         self.assertNotIn("user@company.com", redacted)
         self.assertNotIn("[REDACTED", redacted)

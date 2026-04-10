@@ -21,7 +21,7 @@ from .models import DLPMatch, DLPAction
 from .config import DLPConfig
 
 EXAMPLE_KEYWORDS = [
-    r"\bexample\b", r"\bdummy\b", r"\bsample\b", r"\bplaceholder\b",
+    r"(?<!@)\bexample\b(?!\.(com|org|net|edu|io|co))", r"\bdummy\b", r"\bsample\b", r"\bplaceholder\b",
     r"\bdocumentation\b", r"\btutorial\b", r"\bmock\b"
 ]
 

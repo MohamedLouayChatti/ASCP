@@ -71,8 +71,8 @@ class TestConfigErrorPaths(unittest.TestCase):
         self.assertEqual(config.canary_action, DLPAction.BLOCK)
         self.assertEqual(config.secrets_action, DLPAction.BLOCK)
         self.assertEqual(config.pii_action, DLPAction.REDACT)
-        self.assertEqual(len(config.secret_patterns), 3)
-        self.assertEqual(len(config.pii_patterns), 3)  # email, ipv4, credit_card
+        self.assertEqual(len(config.secret_patterns), 20)
+        self.assertEqual(len(config.pii_patterns), 5)  # email, phone, ipv4, ssn, credit_card
 
     def test_load_invalid_yaml_syntax_returns_defaults(self):
         """Test that invalid YAML syntax gracefully falls back to defaults."""
@@ -111,7 +111,7 @@ other_config:
             config = load_dlp_config(Path(temp_path))
             # Should return defaults when dlp section is missing
             self.assertEqual(config.canary_action, DLPAction.BLOCK)
-            self.assertEqual(len(config.secret_patterns), 3)
+            self.assertEqual(len(config.secret_patterns), 20)
         finally:
             os.remove(temp_path)
 

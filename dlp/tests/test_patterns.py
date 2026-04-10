@@ -13,11 +13,16 @@ import dlp
 class TestPatternEngine(unittest.TestCase):
     def setUp(self):
         self.config = DLPConfig.defaults()
+        for p in self.config.pii_patterns:
+            if p.name == "email":
+                p.action = DLPAction.REDACT
         self.engine = PatternEngine(self.config)
 
     def test_single_pass_redaction(self):
         text = "Contact me at bob@example.com or alice@example.com."
-        matches, redacted = self.engine.scan_text(text, ScanSurface.OUTPUT)
+        result = self.engine.scan(text, ScanSurface.OUTPUT)
+        matches = result.pii
+        redacted = result.redacted_text
 
         # PII action is REDACT by default
         self.assertEqual(len(matches), 2)
@@ -54,7 +59,9 @@ class TestPatternEngine(unittest.TestCase):
 
     def test_no_matches(self):
         text = "This is a clean text with no secrets."
-        matches, redacted = self.engine.scan_text(text, ScanSurface.OUTPUT)
+        result = self.engine.scan(text, ScanSurface.OUTPUT)
+        matches = result.secrets + result.pii
+        redacted = result.redacted_text
         self.assertEqual(len(matches), 0)
         self.assertEqual(redacted, text)
 
