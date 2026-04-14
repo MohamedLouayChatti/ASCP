@@ -28,7 +28,7 @@ def _load_extractor_class() -> type:
 LocalLLMClaimExtractor = _load_extractor_class()
 
 
-extractor = LocalLLMClaimExtractor(model="llama3.2")
+extractor = LocalLLMClaimExtractor(model="llama3.2:1b")
 
 # First check the server is up.
 if not extractor.health_check():
@@ -40,6 +40,7 @@ The Eiffel Tower is located in Paris, France.
 It was built in 1889 by Gustave Eiffel and stands 330 metres tall.
 It attracts around 7 million visitors per year, making it the most
 visited paid monument in the world.
+The tower has three levels for visitors, with restaurants on the first.
 """
 
 result = extractor.extract(answer, answer_id="test_001")

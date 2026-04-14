@@ -16,6 +16,24 @@ Rules:
 6. Drop opinions, hedges, and questions — only extract checkable facts.
 7. Drop meta-sentences like "Here is a summary" or "As mentioned above".
 
+8. Extract EVERY fact in the text — do not skip any.
+   A fact is anything that can be verified: numbers, locations,
+   names, counts, rankings, descriptions, relationships.
+   
+   Example of what NOT to skip:
+   "making it the most visited paid monument in the world"
+   → MUST become: "The Eiffel Tower is the most visited paid monument in the world."
+   
+   "with restaurants on the first level"  
+   → MUST become: "The Eiffel Tower has restaurants on its first level."
+
+9. Preserve the original wording as much as possible.
+   Only change pronouns to their referent. Do not restructure sentences.
+   
+   WRONG: "Gustave Eiffel built The Eiffel Tower in 1889."  (restructured)
+   RIGHT: "The Eiffel Tower was built in 1889 by Gustave Eiffel."  (original order kept)
+
+
 CRITICAL PRONOUN RULE — examples:
   Input:  "The Eiffel Tower is in Paris. It was built in 1889."
   WRONG:  ["It was built in 1889."]

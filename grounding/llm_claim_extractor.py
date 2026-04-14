@@ -72,7 +72,7 @@ class LocalLLMClaimExtractor:
 
     def __init__(
         self,
-        model: str = "llama3.2",
+        model: str = "llama3.2:1b", 
         ollama_url: str = "http://localhost:11434",
         timeout_seconds: float = 30.0,      # local models are slower than API
         fallback_on_error: bool = True,
