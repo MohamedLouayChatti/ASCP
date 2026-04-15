@@ -3,7 +3,7 @@
   "alpha_pattern": {},
   "arrow_config": null,
   "auto_mapping": null,
-  "base_model_name_or_path": "/kaggle/input/models/google/gemma-2/transformers/gemma-2-2b-it/2",
+  "base_model_name_or_path": "google/gemma-2-2b-it",
   "bias": "none",
   "corda_config": null,
   "ensure_weight_tying": false,

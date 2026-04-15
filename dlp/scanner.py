@@ -47,6 +47,8 @@ class DLPScanner:
                 surface=surface,
                 canary_hits=canary_hits,
                 violations=violations,
+                decision_layer="canary",
+                decision_reason=f"Canary detection: {', '.join([ch.label for ch in canary_hits])}",
             )
 
         # 2. Pattern Engine
@@ -61,7 +63,37 @@ class DLPScanner:
         for pm in pii:
             violations.append(f"pii_leak:{pm.pattern_name}")
 
-        if pattern_result.action == "BLOCK":
+        if pattern_result.action == DLPAction.ALLOW:
+            allowed_names = [m.pattern_name for m in secrets + pii if m.action == DLPAction.ALLOW]
+            reason = f"Explicitly allowed by pattern: {', '.join(allowed_names)}" if allowed_names else "Text explicitly allowed by configuration"
+            return DLPResult(
+                original_text=text,
+                clean_text=text,
+                action=DLPAction.ALLOW,
+                surface=surface,
+                secret_matches=secrets,
+                pii_matches=pii,
+                violations=violations,
+                decision_layer="pattern",
+                decision_reason=reason,
+            )
+
+        if pattern_result.action == DLPAction.ESCALATE:
+            escalated_names = [m.pattern_name for m in secrets + pii if m.action == DLPAction.ESCALATE]
+            return DLPResult(
+                original_text=text,
+                clean_text=text,
+                action=DLPAction.ESCALATE,
+                surface=surface,
+                secret_matches=secrets,
+                pii_matches=pii,
+                violations=violations,
+                decision_layer="pattern",
+                decision_reason=f"Pattern escalate: {', '.join(escalated_names)}",
+            )
+
+        if pattern_result.action == DLPAction.BLOCK:
+            blocked_names = [m.pattern_name for m in secrets + pii if m.action == DLPAction.BLOCK]
             return DLPResult(
                 original_text=text,
                 clean_text="[BLOCKED_BY_POLICY]",
@@ -70,9 +102,12 @@ class DLPScanner:
                 secret_matches=secrets,
                 pii_matches=pii,
                 violations=violations,
+                decision_layer="pattern",
+                decision_reason=f"Pattern block: {', '.join(blocked_names)}",
             )
 
-        if pattern_result.action == "REDACT":
+        if pattern_result.action == DLPAction.REDACT:
+            redacted_names = [m.pattern_name for m in secrets + pii if m.action == DLPAction.REDACT]
             return DLPResult(
                 original_text=text,
                 clean_text=pattern_result.redacted_text,
@@ -81,6 +116,8 @@ class DLPScanner:
                 secret_matches=secrets,
                 pii_matches=pii,
                 violations=violations,
+                decision_layer="pattern",
+                decision_reason=f"Pattern redact: {', '.join(redacted_names)}",
             )
 
         # 3. Feature Extraction
@@ -104,4 +141,6 @@ class DLPScanner:
             secret_matches=secrets,
             pii_matches=pii,
             violations=violations,
+            decision_layer="ml",
+            decision_reason=f"ML classification: {final_action.name}",
         )

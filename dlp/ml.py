@@ -1,57 +1,149 @@
-from typing import Any, Optional
+"""
+ml.py — DLP ML Inference Engine
+Integrates the fine-tuned Gemma-2-2b-it + LoRA adapter for local, offline DLP classification.
+
+Architecture
+------------
+- Base model : google/gemma-2-2b-it  (auto-downloaded from HuggingFace on first run)
+- Adapter    : dlp_lora_package/      (bundled with the project, loaded on top of the base)
+- Quantization: 4-bit NF4 (bitsandbytes) — matches the training setup and keeps RAM ≤ 6 GB
+- Inference  : greedy decoding, max_new_tokens=10, deterministic
+
+The engine is a singleton (_engine). First call loads everything; subsequent calls are instant.
+All heavy imports (torch, transformers, peft, bitsandbytes) are deferred so that the rest of
+the DLP module can be imported and used without them being installed if ML is disabled.
+"""
+
+from __future__ import annotations
+
 import os
+
+# Automatically enable high-speed downloads if the 'hf_transfer' package is present
+try:
+    import hf_transfer  # noqa: F401
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+except ImportError:
+    pass
+
+import logging
+from pathlib import Path
+from typing import Any, Optional
 
 from .models import ScanSurface, DLPAction
 from .config import DLPConfig
 
-_engine = None
+logger = logging.getLogger(__name__)
+
+# ── Singleton ─────────────────────────────────────────────────────────────────
+_engine: Optional["MLInferenceEngine"] = None
+
+# ── Resolve the adapter path relative to this file ───────────────────────────
+_THIS_DIR = Path(__file__).parent
+_DEFAULT_LORA_PATH = _THIS_DIR / "ML" / "dlp_lora_package"
+
+# ── Canonical base model (same as training) ───────────────────────────────────
+_BASE_MODEL_ID = "google/gemma-2-2b-it"
+
+# ── Valid output tokens ────────────────────────────────────────────────────────
+_VALID_ACTIONS: dict[str, DLPAction] = {
+    "ALLOW": DLPAction.ALLOW,
+    "REDACT": DLPAction.REDACT,
+    "ESCALATE": DLPAction.ESCALATE,
+    "BLOCK": DLPAction.BLOCK,
+}
+
 
 class MLInferenceEngine:
-    def __init__(self, config: DLPConfig):
+    """
+    Loads the Gemma-2-2b-it base model with 4-bit quantization and applies
+    the fine-tuned LoRA adapter from dlp_lora_package/.
+
+    Parameters
+    ----------
+    config : DLPConfig
+        Runtime config. Reads:
+          - ml_base_model  : HF model ID (default: google/gemma-2-2b-it)
+          - ml_lora_path   : path to the adapter folder (default: ML/dlp_lora_package)
+    """
+
+    def __init__(self, config: DLPConfig) -> None:
         self.config = config
         self.tokenizer = None
         self.model = None
-        self._initialize_model()
+        self._load()
 
-    def _initialize_model(self):
+    # ── Loading ───────────────────────────────────────────────────────────────
+
+    def _load(self) -> None:
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
         from peft import PeftModel
 
-        base_model = getattr(self.config, "ml_base_model", "unsloth/phi-2")
-        lora_path = getattr(self.config, "ml_lora_path", None)
+        base_model_id: str = getattr(self.config, "ml_base_model", _BASE_MODEL_ID) or _BASE_MODEL_ID
+        lora_path = Path(getattr(self.config, "ml_lora_path", None) or _DEFAULT_LORA_PATH)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(base_model)
+        if not lora_path.exists():
+            raise FileNotFoundError(
+                f"LoRA adapter not found at '{lora_path}'. "
+                "Make sure the dlp_lora_package/ folder is present in dlp/ML/."
+            )
+
+        logger.info("DLP-ML: Loading tokenizer from adapter package (%s)…", lora_path)
+
+        # ── Tokenizer — load from the adapter package so we get the exact
+        #    vocabulary and chat template that was used during fine-tuning.
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            str(lora_path),
+            local_files_only=True,  # tokenizer is always bundled — no network call
+        )
+        # Gemma-2 uses <eos> as pad token (set during training)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        
-        # Determine strict generation config (deterministic)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            device_map="auto",
-            torch_dtype=getattr(torch, "float16", torch.float32),
-            low_cpu_mem_usage=True,
-            trust_remote_code=True,
+        self.tokenizer.padding_side = "right"
+
+        # ── 4-bit quantization — mirrors the training BitsAndBytesConfig exactly
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
         )
-        
-        if lora_path and os.path.exists(lora_path):
-            self.model = PeftModel.from_pretrained(self.model, lora_path)
 
+        logger.info("DLP-ML: Loading base model '%s' (4-bit NF4)…", base_model_id)
+        logger.info("DLP-ML: On first run this will download ~1.5 GB from HuggingFace.")
+
+        # device_map="auto" picks GPU if available, otherwise CPU (slow but functional)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            base_model_id,
+            quantization_config=bnb_config,
+            device_map="auto",
+            dtype=torch.bfloat16,
+            low_cpu_mem_usage=True,
+        )
+        self.model.config.use_cache = True  # inference mode — cache is beneficial
+
+        logger.info("DLP-ML: Applying LoRA adapter from '%s'…", lora_path)
+        self.model = PeftModel.from_pretrained(
+            self.model,
+            str(lora_path),
+            is_trainable=False,
+        )
         self.model.eval()
+        logger.info("DLP-ML: Engine ready.")
 
-    def generate_allowed_action(self, text: str, surface: ScanSurface, features: dict[str, Any]) -> str:
-        # Strictly format features as in train.ipynb
-        features_str = "\n".join([f"{k}={v}" for k, v in features.items()])
-        
-        surface_val = surface.value if hasattr(surface, 'value') else str(surface)
-        
-        prompt = f"""You are a classifier for AI agents Data Leakage Prevention (DLP).
+    # ── Prompt construction — must exactly match format_dlp_prompt() in train.ipynb ──
+
+    def _build_prompt(self, text: str, surface: ScanSurface, features: dict[str, Any]) -> str:
+        features_str = "\n".join(f"{k}={v}" for k, v in features.items())
+        surface_val = surface.value if hasattr(surface, "value") else str(surface)
+
+        user_content = f"""You are a Data Leakage Prevention (DLP) classifier for AI agents.
 
 Your task is to analyze the input and classify its risk level into EXACTLY one of:
 ALLOW, REDACT, ESCALATE, BLOCK.
 
 You are given:
-- SURFACE: where the data appears (OUTPUT:LLM's final output to the user, TOOL_ARGS: arguments for the tool calling, TOOL_RESULT: result from the tool)
+- SURFACE: where the data appears (OUTPUT: scanning the agent's final output to the user, TOOL_ARGS: scanning the agent's arguments in a tool call, TOOL_RESULT: scanning the results of a tool call)
 - FEATURES: extracted signals from deterministic analysis
 - TEXT: the raw content
 
@@ -123,62 +215,87 @@ IMPORTANT:
 {features_str}
 
 [TEXT]
-{text}"""
+{text}
 
-        # Graceful fallback if the tokenizer does not natively support chat_template
-        if self.tokenizer.chat_template is not None:
-            convo = [{"role": "user", "content": prompt}]
-            formatted = self.tokenizer.apply_chat_template(convo, tokenize=False, add_generation_prompt=True)
-        else:
-            # Fallback for models like Phi-2 
-            formatted = f"Instruct: {prompt}\nOutput: "
+### Output:"""
 
-        inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
-        
+        # Apply the Gemma-2 chat template (bundled in the adapter package)
+        messages = [{"role": "user", "content": user_content}]
+        formatted = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        return formatted
+
+    # ── Inference ─────────────────────────────────────────────────────────────
+
+    def infer(self, text: str, surface: ScanSurface, features: dict[str, Any]) -> str:
         import torch
+
+        prompt = self._build_prompt(text, surface, features)
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+
         with torch.no_grad():
-            outputs = self.model.generate(
+            output_ids = self.model.generate(
                 **inputs,
                 max_new_tokens=10,
-                do_sample=False,
+                do_sample=False,           # greedy — deterministic, matches eval setup
+                temperature=1.0,           # ignored when do_sample=False, but explicit
                 pad_token_id=self.tokenizer.eos_token_id,
             )
-        
-        # strip prompt tokens
-        generated_id = outputs[0][inputs['input_ids'].shape[-1]:]
-        generated_text = self.tokenizer.decode(generated_id, skip_special_tokens=True).strip()
-        
-        # In case the model outputs extra whitespace or a newline before the actual word
-        generated_text = generated_text.split('\n')[0].strip()
-        return generated_text
+
+        # Strip the prompt tokens; keep only what the model generated
+        generated_ids = output_ids[0][inputs["input_ids"].shape[-1]:]
+        raw = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+        # Model may emit "BLOCK\n" or "BLOCK." — take only the first word
+        return raw.split()[0].upper() if raw.split() else ""
 
 
-def classify(text: str, surface: ScanSurface, features: dict[str, Any], config: Optional[DLPConfig] = None) -> DLPAction:
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def classify(
+    text: str,
+    surface: ScanSurface,
+    features: dict[str, Any],
+    config: Optional[DLPConfig] = None,
+) -> DLPAction:
+    """
+    Classify *text* and return the appropriate DLPAction.
+
+    This is the only function the rest of the DLP module calls.
+    The engine is lazily initialised on the first call and reused afterwards.
+
+    Falls back to DLPAction.ESCALATE on any error (missing packages,
+    model load failure, unparseable output) so the rest of the pipeline
+    can still make a safe decision.
+    """
     global _engine
-    
+
     try:
-        # Initialize engine if needed.
         if _engine is None:
             if config is None:
-                # Fallback to default if no config passed
                 config = DLPConfig.defaults()
             _engine = MLInferenceEngine(config)
-            
-        raw_output = _engine.generate_allowed_action(text, surface, features).upper()
-        
-        # Valid output validation & safety fallback
-        valid_actions = {
-            "ALLOW": DLPAction.ALLOW,
-            "REDACT": DLPAction.REDACT,
-            "ESCALATE": DLPAction.ESCALATE,
-            "BLOCK": DLPAction.BLOCK
-        }
-        
-        if raw_output in valid_actions:
-            return valid_actions[raw_output]
-            
+
+        raw_output = _engine.infer(text, surface, features)
+
+        if raw_output in _VALID_ACTIONS:
+            return _VALID_ACTIONS[raw_output]
+
+        logger.warning("DLP-ML: Unexpected model output %r — falling back to ESCALATE.", raw_output)
         return DLPAction.ESCALATE
-        
-    except Exception:
-        # Fallback to escalate on exception (e.g. missing ml packages, unparseable output)
+
+    except FileNotFoundError as exc:
+        logger.error("DLP-ML: %s", exc)
         return DLPAction.ESCALATE
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("DLP-ML: Inference failed (%s) — defaulting to ESCALATE.", exc)
+        return DLPAction.ESCALATE
+
+
+def reset_engine() -> None:
+    """Force the next classify() call to reload the engine. Useful in tests."""
+    global _engine
+    _engine = None

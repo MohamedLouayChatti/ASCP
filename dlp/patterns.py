@@ -169,22 +169,24 @@ class PatternEngine:
                     redactions.append((start, end, placeholder))
 
         # Decide final action and confidence
-        has_block = any(m.action == DLPAction.BLOCK for m in secrets + pii)
-        has_redact = any(m.action == DLPAction.REDACT for m in secrets + pii)
-        has_pass_ml = any(m.action == DLPAction.PASS_TO_ML for m in secrets + pii)
-
-        if has_block:
-            final_action = "BLOCK"
-            final_confidence = "high"
-        elif has_redact:
-            final_action = "REDACT"
-            final_confidence = "medium"
-        elif has_pass_ml or len(secrets + pii) > 0:
-            final_action = "PASS_TO_ML"
-            final_confidence = "low"
+        all_matches = secrets + pii
+        
+        if all_matches:
+            final_action = max(m.action for m in all_matches)
+            
+            if final_action == DLPAction.BLOCK:
+                final_confidence = "high"
+            elif final_action == DLPAction.ESCALATE:
+                final_confidence = "high"
+            elif final_action == DLPAction.REDACT:
+                final_confidence = "medium"
+            elif final_action == DLPAction.ALLOW:
+                final_confidence = "high"
+            else:
+                final_confidence = "low"
         else:
-            final_action = "PASS_TO_ML"
-            final_confidence = "high" # nothing to block
+            final_action = self.config.unmatched_action
+            final_confidence = "low" if final_action == DLPAction.PASS_TO_ML else "high"
 
         redacted_text = text
         if redactions:

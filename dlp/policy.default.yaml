@@ -14,7 +14,9 @@ dlp:
   # ---------------------------------------------------------------------------
 
   # ── ML / Pipeline Options ────────
-ml_confidence_threshold: 0.6
+# ML Inference — local Gemma-2 + LoRA
+ml_base_model: google/gemma-2-2b-it
+# ml_lora_path: null  # leave null to use the bundled dlp_lora_package/
 
 canary_action: BLOCK
     # Enforcement action when a canary token is detected.
@@ -46,6 +48,16 @@ canary_action: BLOCK
 
   content_keys:
     - text
+    
+  # ---------------------------------------------------------------------------
+  # Default Action for Unmatched Text
+  # Action taken when text does not match ANY rules or canaries in the pattern layer.
+  # 
+  # Options:
+  # - PASS_TO_ML (default): Fall through to the ML classifier for semantic analysis.
+  # - ALLOW: Immediate allow, completely bypassing ML layer.
+  # ---------------------------------------------------------------------------
+  unmatched_action: PASS_TO_ML
     - content
     - body
     - page_content

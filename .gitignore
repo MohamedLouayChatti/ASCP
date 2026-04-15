@@ -80,6 +80,7 @@ models/
 # Environment variables
 .env
 .env.local
+dlp_demo_secrets.py
 
 # OS
 *.log

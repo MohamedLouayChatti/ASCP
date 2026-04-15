@@ -60,6 +60,21 @@ from pathlib import Path
 dlp.init(Path("policy.yaml"))  # See policy.default.yaml template
 ```
 
+## Demo Secret Fixtures
+
+The end-to-end demo uses secret-like test values to validate BLOCK behavior for secret leakage scenarios.
+
+For safety, those values are loaded from a local file that is not committed:
+
+1. Copy `dlp_demo_secrets_example.py` to `dlp_demo_secrets.py`
+2. Edit `dlp_demo_secrets.py` with local test-only values
+3. Run `python dlp_demo.py`
+
+Notes:
+
+- `dlp_demo_secrets.py` is gitignored and must stay local
+- If the local file is missing, the demo still runs with placeholders and skips secret-dependent scenarios
+
 ## Configuration
 
 The DLP system is configured via YAML policy files. **A complete default policy template is available at [`policy.default.yaml`](policy.default.yaml)** with comprehensive documentation for external developers.

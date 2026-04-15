@@ -83,6 +83,25 @@ class PolicyEnforcer:
                 "requires_review": True,
             }
 
+        decision_layer = getattr(result, "decision_layer", "unknown")
+        decision_reason = getattr(result, "decision_reason", "unknown")
+
+        if result.action != final_action:
+            decision_layer = "policy"
+            
+            reasons = []
+            if result.secret_matches and surface_cfg.get("secrets_action"):
+                reasons.append(f"secrets_action={surface_cfg['secrets_action']}")
+            if result.pii_matches and surface_cfg.get("pii_action"):
+                reasons.append(f"pii_action={surface_cfg['pii_action']}")
+            if result.canary_hits and surface_cfg.get("canary_action"):
+                reasons.append(f"canary_action={surface_cfg['canary_action']}")
+            downgrade_val = surface_cfg.get("downgrade_escalate_to_redact", "false").lower() == "true"
+            if downgrade_val and final_action == DLPAction.REDACT and result.action == DLPAction.ESCALATE:
+                reasons.append("downgrade_escalate_to_redact")
+                
+            decision_reason = f"Policy override ({', '.join(reasons)}): {result.action.name}->{final_action.name}"
+
         return EnforcementDecision(
             action=final_action,
             clean_text=clean_text,
@@ -92,4 +111,6 @@ class PolicyEnforcer:
             safe_message=safe_message,
             escalation_event=escalation_event,
             dlp_result=result,
+            decision_layer=decision_layer,
+            decision_reason=decision_reason,
         )

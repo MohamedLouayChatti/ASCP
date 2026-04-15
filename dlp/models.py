@@ -35,7 +35,7 @@ class DLPAction(Enum):
 
 @dataclass
 class PatternResult:
-    action: str  # "BLOCK" | "REDACT" | "PASS_TO_ML"
+    action: DLPAction
     secrets: list["DLPMatch"]
     pii: list["DLPMatch"]
     confidence: str  # "high" | "medium" | "low"
@@ -73,6 +73,8 @@ class DLPResult:
     secret_matches: list[DLPMatch] = field(default_factory=list)
     pii_matches: list[DLPMatch] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
+    decision_layer: str = ""
+    decision_reason: str = ""
 
     @property
     def has_violations(self) -> bool:
@@ -103,3 +105,5 @@ class EnforcementDecision:
     safe_message: str | None = None
     escalation_event: dict | None = None
     dlp_result: DLPResult | None = None
+    decision_layer: str = ""
+    decision_reason: str = ""

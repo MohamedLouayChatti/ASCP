@@ -36,6 +36,7 @@ class DLPConfig:
     canary_salt: str
     secrets_action: DLPAction
     pii_action: DLPAction
+    unmatched_action: DLPAction
     secret_patterns: list[PatternDef] = field(default_factory=list)
     pii_patterns: list[PatternDef] = field(default_factory=list)
     canary_labels: list[str] = field(
@@ -66,7 +67,10 @@ class DLPConfig:
     canary_fuzzy_overlap: float = 0.8
 
     # ── ML Inference ──────────────────────────────────────────────────────────
-    ml_base_model: str = "unsloth/mistral-7b-instruct-v0.2-bnb-4bit"
+    # Base model must match what was used in training (google/gemma-2-2b-it).
+    # Downloaded automatically from HuggingFace on first run (~1.5 GB).
+    ml_base_model: str = "google/gemma-2-2b-it"
+    # Path to the LoRA adapter folder.  None = use the bundled dlp_lora_package/.
     ml_lora_path: str | None = None
 
     @classmethod
@@ -77,10 +81,11 @@ class DLPConfig:
             canary_salt=_DEFAULT_SALT,
             secrets_action=DLPAction.BLOCK,
             pii_action=DLPAction.REDACT,
+            unmatched_action=DLPAction.PASS_TO_ML,
             secret_patterns=[
                 PatternDef(name="openai_key",    regex=r"sk-[A-Za-z0-9]{20,}", action=DLPAction.BLOCK),
                 PatternDef(name="anthropic_key", regex=r"sk-ant-[A-Za-z0-9-]{20,}", action=DLPAction.BLOCK),
-                PatternDef(name="stripe_key",    regex=r"(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{24,}", action=DLPAction.BLOCK),
+                PatternDef(name="stripe_key",    regex=r"(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{24,}", action=DLPAction.PASS_TO_ML),
                 PatternDef(name="aws_access_key", regex=r"(?i)(?:aws|access[_-]?key)[\s:='\&quot;]{0,5}(AKIA[0-9A-Z]{16})", action=DLPAction.BLOCK),
                 PatternDef(name="github_token",  regex=r"(?:gh[ps]_|github_pat_)[A-Za-z0-9_]+", action=DLPAction.BLOCK),
                 PatternDef(name="slack_token",   regex=r"xox[baprs]-[0-9]+-[0-9]+-[A-Za-z0-9_]+", action=DLPAction.BLOCK),
@@ -95,7 +100,7 @@ class DLPConfig:
                 PatternDef(name="jdbc_connection_string", regex=r"jdbc:[a-z]+:\/\/[^\s]+", action=DLPAction.BLOCK),
                 PatternDef(name="mongodb_srv",   regex=r"mongodb\+srv:\/\/[^:\s]+:[^@\s]+@[^\/\s]+", action=DLPAction.BLOCK),
                 PatternDef(name="private_key",   regex=r"-----BEGIN (RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----", action=DLPAction.BLOCK),
-                PatternDef(name="env_secrets",   regex=r"(?i)(API_KEY|SECRET_KEY|ACCESS_TOKEN|DB_PASSWORD|PRIVATE_KEY)[\s:='\&quot;]{0,5}[^\s'\&quot;]{8,}", action=DLPAction.BLOCK),
+                PatternDef(name="env_secrets",   regex=r"(?i)(API_KEY|SECRET_KEY|ACCESS_TOKEN|DB_PASSWORD|PRIVATE_KEY)[\s:='\&quot;]{0,5}[^\s'\&quot;]{8,}", action=DLPAction.PASS_TO_ML),
                 PatternDef(name="env_style",     regex=r"^[A-Z_]+=(?!.*(example|test|dummy)).+", action=DLPAction.PASS_TO_ML),
                 PatternDef(name="high_entropy_token", regex=r"\b[a-zA-Z0-9_\-]{32,}\b", action=DLPAction.PASS_TO_ML),
             ],
@@ -221,6 +226,7 @@ def load_dlp_config(policy_path: Path) -> DLPConfig:
         canary_salt=canary_salt,
         secrets_action=_parse_action(d.get("secrets_action", "BLOCK")),
         pii_action=_parse_action(d.get("pii_action", "REDACT")),
+        unmatched_action=_parse_action(d.get("unmatched_action", "PASS_TO_ML")),
         secret_patterns=secret_patterns,
         pii_patterns=pii_patterns,
         canary_labels=d.get("canary_labels", ["api_credential_mock", "db_password", "sys_admin_token"]),
@@ -241,7 +247,7 @@ def load_dlp_config(policy_path: Path) -> DLPConfig:
         canary_fuzzy_match=bool(d.get("canary_fuzzy_match", False)),
         canary_fuzzy_overlap=float(d.get("canary_fuzzy_overlap", 0.8)),
         # ML pipeline
-        ml_base_model=str(d.get("ml_base_model", "unsloth/mistral-7b-instruct-v0.2-bnb-4bit")),
+        ml_base_model=str(d.get("ml_base_model", "google/gemma-2-2b-it")),
         ml_lora_path=d.get("ml_lora_path"),
 
     )
