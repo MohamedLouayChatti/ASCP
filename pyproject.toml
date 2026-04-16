@@ -36,6 +36,16 @@ dependencies = [
     "mcp>=1.26.0",
     "opentelemetry-api>=1.28.0",
     "opentelemetry-sdk>=1.28.0",
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ascp-dlp"
+version = "0.1.0"
+description = "ASCP Data Leakage Prevention Module"
+requires-python = ">=3.9"
+dependencies = [
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -78,3 +88,65 @@ include = [
 
 [tool.hatch.metadata]
 allow-direct-references = true
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.5.0",
+    "types-PyYAML>=6.0",
+]
+ner = [
+    "spacy>=3.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["dlp/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --cov=dlp --cov-report=html --cov-report=term-missing --cov-report=xml"
+markers = [
+    "integration: integration tests",
+    "unit: unit tests",
+]
+
+[tool.coverage.run]
+source = ["dlp"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+precision = 2
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip_gitignore = true
+known_first_party = ["dlp"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312", "py313"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
