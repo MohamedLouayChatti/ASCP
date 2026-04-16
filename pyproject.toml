@@ -21,9 +21,6 @@ dev = [
     "mypy>=1.5.0",
     "types-PyYAML>=6.0",
 ]
-ner = [
-    "spacy>=3.0.0",
-]
 
 [tool.pytest.ini_options]
 testpaths = ["dlp/tests"]
