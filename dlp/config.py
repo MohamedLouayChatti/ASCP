@@ -1,3 +1,4 @@
+import re
 import logging
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ class PatternDef:
     name: str
     regex: str
     action: DLPAction | None = None
+    flags: int = 0  # re.compile flags, e.g. re.MULTILINE
 
 
 _DEFAULT_SURFACE_OVERRIDES: dict[str, dict[str, str]] = {
@@ -101,7 +103,7 @@ class DLPConfig:
                 PatternDef(name="mongodb_srv",   regex=r"mongodb\+srv:\/\/[^:\s]+:[^@\s]+@[^\/\s]+", action=DLPAction.BLOCK),
                 PatternDef(name="private_key",   regex=r"-----BEGIN (RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----", action=DLPAction.BLOCK),
                 PatternDef(name="env_secrets",   regex=r"(?i)(API_KEY|SECRET_KEY|ACCESS_TOKEN|DB_PASSWORD|PRIVATE_KEY)[\s:='\&quot;]{0,5}[^\s'\&quot;]{8,}", action=DLPAction.BLOCK),
-                PatternDef(name="env_style",     regex=r"^[A-Z_]+=(?!.*(example|test|dummy)).+", action=DLPAction.PASS_TO_ML),
+                PatternDef(name="env_style",     regex=r"^[A-Z_]+=(?!.*(example|test|dummy)).+", action=DLPAction.PASS_TO_ML, flags=re.MULTILINE),
                 PatternDef(name="high_entropy_token", regex=r"\b[a-zA-Z0-9_\-]{32,}\b", action=DLPAction.PASS_TO_ML),
             ],
             pii_patterns=[

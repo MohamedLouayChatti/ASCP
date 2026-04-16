@@ -3,9 +3,13 @@
 # This file lists the minimum dependencies required to run the DLP module.
 #
 # For optional ML Classification (Steps 3 & 4 of the pipeline), also install:
-pip install torch transformers peft bitsandbytes accelerate
+torch 
+transformers 
+peft
+bitsandbytes
+accelerate
 #
 # For faster HuggingFace model downloads:
-pip install hf-transfer
+hf-transfer
 
 pyyaml>=6.0

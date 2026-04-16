@@ -23,11 +23,11 @@ class PatternEngine:
 
         for p in self.config.secret_patterns:
             self._patterns.append(
-                (p.name, re.compile(p.regex), p.action if p.action is not None else self.config.secrets_action, "secret")
+                (p.name, re.compile(p.regex, p.flags), p.action if p.action is not None else self.config.secrets_action, "secret")
             )
         for p in self.config.pii_patterns:
             self._patterns.append(
-                (p.name, re.compile(p.regex), p.action if p.action is not None else self.config.pii_action, "pii")
+                (p.name, re.compile(p.regex, p.flags), p.action if p.action is not None else self.config.pii_action, "pii")
             )
 
     # ── Redaction helpers ─────────────────────────────────────────────────────
