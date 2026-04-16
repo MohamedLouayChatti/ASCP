@@ -18,10 +18,15 @@ from __future__ import annotations
 
 import os
 
-# Automatically enable high-speed downloads if the 'hf_transfer' package is present
+# Automatically enable high-speed downloads natively in newer huggingface-hub versions
+os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
+
 try:
     import hf_transfer  # noqa: F401
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    import huggingface_hub.constants
+    # Set the legacy variable only if huggingface_hub is older and doesn't deprecate it.
+    if not hasattr(huggingface_hub.constants, "HF_XET_HIGH_PERFORMANCE"):
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 except ImportError:
     pass
 
