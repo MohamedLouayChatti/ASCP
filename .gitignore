@@ -72,10 +72,18 @@ env/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+<<<<<<< HEAD
+=======
+*.ipynb
+>>>>>>> origin/layerd
 
 # Data files
 *.csv
 *.xlsx
+<<<<<<< HEAD
+=======
+*.json
+>>>>>>> origin/layerd
 data/
 datasets/
 *.pkl
@@ -91,9 +99,16 @@ models/
 # Environment variables
 .env
 .env.local
+<<<<<<< HEAD
 dlp_demo_secrets.py
+=======
+>>>>>>> origin/layerd
 
 # OS
 *.log
 *.tmp
+<<<<<<< HEAD
 node_modules/
+=======
+node_modules/
+>>>>>>> origin/layerd
