@@ -7,21 +7,39 @@
 # To customise, pass your own policy file to dlp.init(Path("path/to/policy.yaml"))
 
 dlp:
+
+  # ---------------------------------------------------------------------------
+  # ML / Pipeline Options
+  # ---------------------------------------------------------------------------
+
+  # Base model for ML Classification (Step 4). Must match what the LoRA adapter was trained on.
+  # The model (~1.5 GB) is downloaded automatically from HuggingFace on first run.
+  ml_base_model: google/gemma-2-2b-it
+
+  # Path to the LoRA adapter folder. Leave null to use the bundled dlp/ML/dlp_lora_package/.
+  # ml_lora_path: null
+
+  # ---------------------------------------------------------------------------
+  # Default Action for Unmatched Text
+  # Action taken when text does not match ANY pattern in the Pattern Engine.
+  #
+  # Options:
+  # - PASS_TO_ML (default): Fall through to the ML classifier for semantic analysis.
+  # - ALLOW: Immediately allow, completely bypassing the ML layer.
+  # ---------------------------------------------------------------------------
+  unmatched_action: PASS_TO_ML
+
   # ---------------------------------------------------------------------------
   # Canary Configuration
-  # Canaries are injected tokens used to detect unauthorized information extraction.
-  # If a canary token appears in system output, it indicates a potential data leak.
+  # Canaries are cryptographic tokens injected into system prompts, RAG documents,
+  # and tool results. If a canary token appears in any LLM output or tool argument,
+  # it indicates verbatim leakage of confidential internal context.
   # ---------------------------------------------------------------------------
 
-  # ── ML / Pipeline Options ────────
-# ML Inference — local Gemma-2 + LoRA
-ml_base_model: google/gemma-2-2b-it
-# ml_lora_path: null  # leave null to use the bundled dlp_lora_package/
-
-canary_action: BLOCK
-    # Enforcement action when a canary token is detected.
-    # Options: ALLOW, REDACT, ESCALATE, BLOCK
-    # Recommended: BLOCK (canary leaks indicate serious security violations)
+  # Enforcement action when a canary token is detected.
+  # Options: ALLOW, REDACT, ESCALATE, BLOCK
+  # Recommended: BLOCK (canary leaks indicate serious security violations)
+  canary_action: BLOCK
 
   # SECURITY CRITICAL: Change this value before deploying to production.
   # The default value below is public knowledge — tokens derived from it are
@@ -31,9 +49,9 @@ canary_action: BLOCK
   # All DLP instances in a deployment must share the same salt.
   canary_salt: "default_insecure_salt_replace_in_prod"
 
+  # Labels for different types of canary tokens.
+  # Each label generates a unique deterministic token for tracking different leak types.
   canary_labels:
-    # Labels for different types of canary tokens.
-    # Each label generates a unique deterministic token for tracking different leak types.
     - api_credential_mock      # Simulates API credentials (e.g., external service tokens)
     - db_password              # Simulates database credentials
     - sys_admin_token          # Simulates system administration tokens
@@ -45,34 +63,21 @@ canary_action: BLOCK
   # document schema uses (e.g. LangChain's "page_content") to ensure the canary
   # is visible to the model.
   # ---------------------------------------------------------------------------
-
   content_keys:
     - text
-    
-  # ---------------------------------------------------------------------------
-  # Default Action for Unmatched Text
-  # Action taken when text does not match ANY rules or canaries in the pattern layer.
-  # 
-  # Options:
-  # - PASS_TO_ML (default): Fall through to the ML classifier for semantic analysis.
-  # - ALLOW: Immediate allow, completely bypassing ML layer.
-  # ---------------------------------------------------------------------------
-  unmatched_action: PASS_TO_ML
     - content
     - body
     - page_content
     - chunk
 
-
   # ---------------------------------------------------------------------------
   # Secret Detection Configuration
   # Patterns for detecting high-sensitivity credentials and API keys.
+  # Enforcement action when a secret is detected (can be overridden per-pattern).
+  # Options: ALLOW, REDACT, ESCALATE, BLOCK
+  # Recommended: BLOCK (secrets should never be leaked)
   # ---------------------------------------------------------------------------
-
   secrets_action: BLOCK
-    # Enforcement action when a secret is detected.
-    # Options: ALLOW, REDACT, ESCALATE, BLOCK
-    # Recommended: BLOCK (secrets should never be leaked)
 
   secret_patterns:
     - name: openai_key
@@ -88,15 +93,15 @@ canary_action: BLOCK
       action: BLOCK
 
     - name: aws_access_key
-      regex: "(?i)(?:aws|access[_-]?key)[\\s:='\\\"]{0,5}(AKIA[0-9A-Z]{16})"
+      regex: "(?i)(?:aws|access[_-]?key)[\\s:='\"]{0,5}(AKIA[0-9A-Z]{16})"
       action: BLOCK
 
     - name: github_token
-      regex: "gh[ps]_[A-Za-z0-9]{36,}"
+      regex: "(?:gh[ps]_|github_pat_)[A-Za-z0-9_]+"
       action: BLOCK
 
     - name: slack_token
-      regex: "xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[A-Za-z0-9]{24}"
+      regex: "xox[baprs]-[0-9]+-[0-9]+-[A-Za-z0-9_]+"
       action: BLOCK
 
     - name: google_api_key
@@ -116,11 +121,11 @@ canary_action: BLOCK
       action: BLOCK
 
     - name: generic_api_key
-      regex: "(?i)(api[_-]?key|access[_-]?token|auth[_-]?token)[\\s:='\\\"]{0,5}[a-zA-Z0-9+/_-]{32,64}={0,2}"
+      regex: "(?i)(api[_-]?key|access[_-]?token|auth[_-]?token)[\\s:='\"]{0,5}[a-zA-Z0-9+/_-]{32,64}={0,2}"
       action: PASS_TO_ML
 
     - name: secret
-      regex: "(?i)(secret|client_secret)[\\s:='\\\"]{0,5}[a-zA-Z0-9+/_-]{8,}"
+      regex: "(?i)(secret|client_secret)[\\s:='\"]{0,5}[a-zA-Z0-9+/_-]{8,}"
       action: PASS_TO_ML
 
     - name: bearer_token
@@ -144,7 +149,7 @@ canary_action: BLOCK
       action: BLOCK
 
     - name: env_secrets
-      regex: "(?i)(API_KEY|SECRET_KEY|ACCESS_TOKEN|DB_PASSWORD|PRIVATE_KEY)[\\s:='\\\"]{0,5}[^\\s'\\\"]{8,}"
+      regex: "(?i)(API_KEY|SECRET_KEY|ACCESS_TOKEN|DB_PASSWORD|PRIVATE_KEY)[\\s:='\"]{0,5}[^\\s'\"]{8,}"
       action: BLOCK
 
     - name: env_style
@@ -160,12 +165,11 @@ canary_action: BLOCK
   # PII Detection Configuration
   # These patterns detect Personally Identifiable Information.
   # PII is typically redacted rather than blocked to allow sanitised output.
+  # Enforcement action when PII is detected (can be overridden per-pattern).
+  # Options: ALLOW, REDACT, ESCALATE, BLOCK
+  # Recommended: REDACT (allows systems to operate while sanitising sensitive data)
   # ---------------------------------------------------------------------------
-
   pii_action: REDACT
-    # Enforcement action when PII is detected.
-    # Options: ALLOW, REDACT, ESCALATE, BLOCK
-    # Recommended: REDACT (allows systems to operate while sanitising sensitive data)
 
   pii_patterns:
     - name: email
@@ -173,7 +177,7 @@ canary_action: BLOCK
       action: PASS_TO_ML
 
     - name: phone
-      regex: "\\+?[1-9][0-9]{7,14}"
+      regex: "\\+?[1-9]\\d{1,3}[-.\\s]?\\(?\\d+\\)?[-.\\s]?\\d+[-.\\s]?\\d+"
       action: PASS_TO_ML
 
     - name: ipv4
@@ -190,39 +194,16 @@ canary_action: BLOCK
 
 
   # ---------------------------------------------------------------------------
-  # Named Entity Recognition (NER)
-  # Enable spaCy-based NER for advanced PII detection.
-  # Requires: pip install spacy && python -m spacy download en_core_web_sm
-  # ---------------------------------------------------------------------------
-
-  enable_ner: false
-    # Set to true to enable spaCy-based Named Entity Recognition.
-    # Detected entity types: PERSON, ORG, GPE, LOC, DATE, EMAIL, PHONE
-    # Note: NER adds latency — enable only when comprehensive PII detection is required.
-
-
-  # ---------------------------------------------------------------------------
   # ADVANCED DETECTION CAPABILITIES
+  # All features below default to disabled. Enable selectively.
   # ---------------------------------------------------------------------------
 
-  # 1. Shannon Entropy Detection
-  # Detects high-entropy strings (e.g. randomly generated credentials) that do
-  # not match known regex patterns.
-  entropy:
-    enabled: false
-    threshold: 4.5
-    min_length: 20
-    context_window: 40
-    trigger_words: ["key", "token", "secret", "password", "credential", "api", "auth"]
-    negation_words: ["example", "format", "fake", "test", "placeholder", "sample", "dummy"]
-    action: block
-
-  # 2. Luhn Validation
-  # Validates the modulo-10 checksum of 'credit_card' matches to massively
+  # 1. Luhn Validation
+  # Validates the modulo-10 checksum of credit_card matches to massively
   # reduce false positives (e.g. dropping product SKUs or tracking numbers).
   luhn_validation: false
 
-  # 3. Contextual Window Analysis
+  # 2. Contextual Window Analysis
   # Suppresses or downgrades matches that appear surrounded by documentation or
   # example context without any accompanying trigger words.
   context_analysis:
@@ -230,32 +211,20 @@ canary_action: BLOCK
     window: 50
     trigger_words: ["my", "our", "here is", "use", "actual", "secret", "real", "paste"]
     negation_words: ["example", "format", "test", "fake", "sample", "dummy", "placeholder", "documentation", "like", "similar"]
-    on_negation: downgrade  # "downgrade" (to ALLOW) or "suppress" (drop entirely)
+    # "downgrade": set action=ALLOW (kept in telemetry, not actioned)
+    # "suppress":  drop the match entirely
+    on_negation: downgrade
 
-  # 4. Format-Preserving Redaction
-  # If true, REDACT actions will replace sensitive data with structurally valid
+  # 3. Format-Preserving Redaction
+  # If true, REDACT actions replace sensitive data with structurally valid
   # placeholders rather than [REDACTED_...] tags, keeping downstream parsers valid.
   format_preserving_redaction: false
 
-  # 5. Fuzzy Canary Matching
-  # Detects reformatted canary tokens (e.g., lowercased, spaced out) using
-  # a normalized sliding-window algorithm.
+  # 4. Fuzzy Canary Matching
+  # Detects reformatted canary tokens (e.g., lowercased, spaced out, partially
+  # quoted) using a normalised sliding-window similarity algorithm.
   canary_fuzzy_match: false
   canary_fuzzy_overlap: 0.8
-
-  # 6. Document Fingerprinting
-  # Defends against verbatim reproduction of retrieved documents (copyright/RAG).
-  # Fingerprints retrieved docs using word trigrams and asserts max overlap limit.
-  fingerprinting:
-    enabled: false
-    threshold: 0.3
-    max_docs: 1000
-    ttl_seconds: 3600
-
-  # 7. Structured Data Scanning
-  # Run recursive detection over dictionaries/lists rather than raw JSON strings.
-  # Assigns precise JSON path attribution (e.g., "pii_leak:email@users[0].email")
-  enable_structured_scan: false
 
 
   # ---------------------------------------------------------------------------
@@ -270,22 +239,20 @@ canary_action: BLOCK
   #   tool_result  — Data returned from tools
   #
   # Supported inner keys per surface:
-  #   secrets_action                : DLPAction name applied when secrets are found
-  #   pii_action                    : DLPAction name applied when PII is found
-  #   canary_action                 : DLPAction name applied when canary hits are found
+  #   secrets_action                : DLPAction applied when secrets are found
+  #   pii_action                    : DLPAction applied when PII is found
+  #   canary_action                 : DLPAction applied when canary hits are found
   #   downgrade_escalate_to_redact  : "true" | "false"
   #       When true, a final ESCALATE is downgraded to REDACT if the only
-  #       violations are PII (no canary, no secret). Useful on TOOL_RESULT
-  #       where human review for low-severity PII findings is undesirable.
+  #       violations are PII (no canary hit, no secret match).
   #
-  # Action overrides only escalate — they cannot silently downgrade a BLOCK.
-  # Omit a surface entry to inherit global action defaults for that surface.
+  # Overrides can only escalate — they cannot silently downgrade a BLOCK.
+  # Omit a surface entry to inherit global defaults for that surface.
   # ---------------------------------------------------------------------------
-
   surface_overrides:
     tool_args:
       # Secrets in tool arguments are always blocked, even if the global
-      # secrets_action is set to ALLOW or REDACT. Prevent credentials from
+      # secrets_action is set to ALLOW or REDACT. Prevents credentials from
       # flowing into external tools regardless of operator policy.
       secrets_action: block
 
@@ -296,28 +263,26 @@ canary_action: BLOCK
 
 
 # ==============================================================================
-# CUSTOMISATION GUIDE FOR DEVELOPERS
+# CUSTOMISATION GUIDE
 # ==============================================================================
 #
-# 1. CHANGING ENFORCEMENT ACTIONS
-#    - ALLOW:   No action; content passes through unchanged
-#    - REDACT:  Matching content replaced with [REDACTED_category_type]
+# 1. ENFORCEMENT ACTIONS
+#    - ALLOW:    No action; content passes through unchanged
+#    - REDACT:   Matching content replaced with [REDACTED_category_name]
 #    - ESCALATE: Violation logged and flagged for human review
-#    - BLOCK:   Request rejected with a safe message
+#    - BLOCK:    Request rejected; safe_message returned to the caller
 #
 # 2. ADDING NEW SECRET PATTERNS
-#      - name: my_custom_token
-#        regex: "MYPREFIX-[A-Za-z0-9]{20}"
+#    - name: my_custom_token
+#      regex: "MYPREFIX-[A-Za-z0-9]{20}"
+#      action: BLOCK
 #
 # 3. ADDING NEW PII PATTERNS
-#      - name: ssn
-#        regex: "\\d{3}-\\d{2}-\\d{4}"
+#    - name: uk_nino
+#      regex: "[A-Z]{2}\\d{6}[A-D]"
+#      action: REDACT
 #
-# 4. PER-SURFACE OVERRIDES
-#    Use the surface_overrides block above. Each surface can independently
-#    configure action overrides and the escalation downgrade flag.
-#    Example: make the output surface also downgrade PII escalations:
-#
+# 4. PER-SURFACE OVERRIDES EXAMPLE
 #    surface_overrides:
 #      output:
 #        downgrade_escalate_to_redact: "true"
@@ -326,10 +291,12 @@ canary_action: BLOCK
 #        pii_action: redact
 #
 # 5. PRODUCTION DEPLOYMENT CHECKLIST
-#    [ ] Replace canary_salt with output of: python -c "import secrets; print(secrets.token_hex(32))"
-#    [ ] Review all regex patterns for false positives in your domain
-#    [ ] Set enable_ner: true if comprehensive PII detection is required
+#    [ ] Replace canary_salt with: python -c "import secrets; print(secrets.token_hex(32))"
+#    [ ] All DLP instances share the same canary_salt
+#    [ ] Review regex patterns for false positives in your domain
 #    [ ] Add your document schema keys to content_keys
-#    [ ] Test with representative data to verify redaction behaviour
+#    [ ] Enable luhn_validation: true if your domain involves payment card data
+#    [ ] Enable context_analysis if you serve documentation-heavy or example-rich content
+#    [ ] Test with representative data before going live
 #
 # ==============================================================================
