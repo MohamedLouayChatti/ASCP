@@ -85,7 +85,7 @@ class DLPConfig:
             secret_patterns=[
                 PatternDef(name="openai_key",    regex=r"sk-[A-Za-z0-9]{20,}", action=DLPAction.BLOCK),
                 PatternDef(name="anthropic_key", regex=r"sk-ant-[A-Za-z0-9-]{20,}", action=DLPAction.BLOCK),
-                PatternDef(name="stripe_key",    regex=r"(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{24,}", action=DLPAction.PASS_TO_ML),
+                PatternDef(name="stripe_key",    regex=r"(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{24,}", action=DLPAction.BLOCK),
                 PatternDef(name="aws_access_key", regex=r"(?i)(?:aws|access[_-]?key)[\s:='\&quot;]{0,5}(AKIA[0-9A-Z]{16})", action=DLPAction.BLOCK),
                 PatternDef(name="github_token",  regex=r"(?:gh[ps]_|github_pat_)[A-Za-z0-9_]+", action=DLPAction.BLOCK),
                 PatternDef(name="slack_token",   regex=r"xox[baprs]-[0-9]+-[0-9]+-[A-Za-z0-9_]+", action=DLPAction.BLOCK),
@@ -100,7 +100,7 @@ class DLPConfig:
                 PatternDef(name="jdbc_connection_string", regex=r"jdbc:[a-z]+:\/\/[^\s]+", action=DLPAction.BLOCK),
                 PatternDef(name="mongodb_srv",   regex=r"mongodb\+srv:\/\/[^:\s]+:[^@\s]+@[^\/\s]+", action=DLPAction.BLOCK),
                 PatternDef(name="private_key",   regex=r"-----BEGIN (RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----", action=DLPAction.BLOCK),
-                PatternDef(name="env_secrets",   regex=r"(?i)(API_KEY|SECRET_KEY|ACCESS_TOKEN|DB_PASSWORD|PRIVATE_KEY)[\s:='\&quot;]{0,5}[^\s'\&quot;]{8,}", action=DLPAction.PASS_TO_ML),
+                PatternDef(name="env_secrets",   regex=r"(?i)(API_KEY|SECRET_KEY|ACCESS_TOKEN|DB_PASSWORD|PRIVATE_KEY)[\s:='\&quot;]{0,5}[^\s'\&quot;]{8,}", action=DLPAction.BLOCK),
                 PatternDef(name="env_style",     regex=r"^[A-Z_]+=(?!.*(example|test|dummy)).+", action=DLPAction.PASS_TO_ML),
                 PatternDef(name="high_entropy_token", regex=r"\b[a-zA-Z0-9_\-]{32,}\b", action=DLPAction.PASS_TO_ML),
             ],
