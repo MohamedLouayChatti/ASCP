@@ -1,0 +1,184 @@
+syntax = "proto3";
+
+package ascp;
+
+import "google/protobuf/struct.proto";
+
+// Enum for standardizing policy decisions
+enum DecisionStatus {
+  DECISION_UNKNOWN = 0;
+  ALLOW = 1;
+  BLOCK = 2;
+  REDACT = 3;
+  REQUIRE_APPROVAL = 4;
+  ESCALATE = 5;
+}
+
+// Common context across all requests
+message InvocationContext {
+  string agent_id = 1;
+  string framework = 2;
+  string workflow = 3;
+  repeated string history = 4;
+  repeated string evidence_ids = 5;
+  google.protobuf.Struct trust_vector = 6;
+  google.protobuf.Struct metadata = 7;
+}
+
+// Common decision response fields
+message SecurityDecision {
+  DecisionStatus status = 1;
+  string approval_token = 2;
+  string reason_code = 3;
+  repeated string violations = 4;
+  float risk_score = 5;
+  string severity = 6;
+  string trace = 7;
+}
+
+// The ASCP Orchestrator Service allows any agent framework to validate their interactions.
+service OrchestratorService {
+  rpc BeginInvocation (BeginInvocationRequest) returns (BeginInvocationResponse) {}
+  rpc EndInvocation (EndInvocationRequest) returns (EndInvocationResponse) {}
+
+  rpc HookSystemPrompt (SystemPromptRequest) returns (SystemPromptResponse) {}
+  rpc HookUserInput (UserInputRequest) returns (UserInputResponse) {}
+  rpc HookPromptGet (PromptGetRequest) returns (PromptGetResponse) {}
+  rpc HookRagRetrieval (RagRequest) returns (RagResponse) {}
+  rpc HookResourceRead (ResourceReadRequest) returns (ResourceReadResponse) {}
+  
+  rpc HookToolCall (ToolCallRequest) returns (ToolCallResponse) {}
+  rpc HookToolResult (ToolResultRequest) returns (ToolResultResponse) {}
+
+  rpc HookAgentOutput (AgentOutputRequest) returns (AgentOutputResponse) {}
+  rpc HookStreamingAgentOutput (stream AgentOutputRequest) returns (stream AgentOutputResponse) {}
+}
+
+message Document {
+  string text = 1;
+  string source = 2;
+}
+
+// Session
+message BeginInvocationRequest {
+  string version = 1;
+  string correlation_id = 2;
+  InvocationContext invocation_context = 3;
+}
+message BeginInvocationResponse {
+  string session_id = 1;
+  SecurityDecision decision = 2;
+}
+
+message EndInvocationRequest {
+  string version = 1;
+  string correlation_id = 2;
+  string session_id = 3;
+}
+message EndInvocationResponse {
+  SecurityDecision decision = 1;
+}
+
+// Prompts
+message SystemPromptRequest {
+  string version = 1;
+  string correlation_id = 2;
+  string prompt_text = 3;
+  InvocationContext invocation_context = 4;
+}
+message SystemPromptResponse {
+  string validated_prompt = 1;
+  SecurityDecision decision = 2;
+}
+
+message UserInputRequest {
+  string version = 1;
+  string correlation_id = 2;
+  string input_text = 3;
+  InvocationContext invocation_context = 4;
+}
+message UserInputResponse {
+  string validated_input = 1;
+  SecurityDecision decision = 2;
+}
+
+message PromptGetRequest {
+  string version = 1;
+  string correlation_id = 2;
+  string prompt_name = 3;
+  InvocationContext invocation_context = 4;
+}
+message PromptGetResponse {
+  string prompt_text = 1;
+  SecurityDecision decision = 2;
+}
+
+// Resources (RAG/docs)
+message RagRequest {
+  string version = 1;
+  string correlation_id = 2;
+  repeated Document retrieved_docs = 3;
+  InvocationContext invocation_context = 4;
+}
+message RagResponse {
+  repeated Document injected_docs = 1;
+  string canary_token = 2;
+  SecurityDecision decision = 3;
+}
+
+message ResourceReadRequest {
+  string version = 1;
+  string correlation_id = 2;
+  string resource_uri = 3;
+  InvocationContext invocation_context = 4;
+}
+message ResourceReadResponse {
+  string resource_content = 1;
+  SecurityDecision decision = 2;
+}
+
+// Tools
+message ToolCallRequest {
+  string version = 1;
+  string correlation_id = 2;
+  string tool_name = 3;
+  google.protobuf.Struct tool_args = 4;
+  optional string approval_token = 5;
+  InvocationContext invocation_context = 6;
+}
+message ToolCallResponse {
+  SecurityDecision decision = 1;
+  google.protobuf.Struct sanitized_args = 2;
+  
+  // Deprecated fields (kept for backward compatibility before migration)
+  bool is_allowed = 3;
+  string error_message = 4;
+  bool requires_approval = 5;
+}
+
+message ToolResultRequest {
+  string version = 1;
+  string correlation_id = 2;
+  string tool_name = 3;
+  string tool_result_string = 4;
+  InvocationContext invocation_context = 5;
+}
+message ToolResultResponse {
+  string sanitized_result = 1;
+  SecurityDecision decision = 2;
+}
+
+// Outputs
+message AgentOutputRequest {
+  string version = 1;
+  string correlation_id = 2;
+  string generated_text = 3;
+  repeated string context_docs = 4;
+  InvocationContext invocation_context = 5;
+  bool is_final = 6; // To signal stream completion if used inside streams
+}
+message AgentOutputResponse {
+  string clean_text = 1;
+  bool was_blocked = 2; // Keep for backward compat
+  SecurityDecision decision = 3;
+}
