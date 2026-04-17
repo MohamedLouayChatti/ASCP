@@ -1,11 +1,22 @@
-annotated-types==0.7.0
-colorama==0.4.6
-iniconfig==2.3.0
-packaging==26.0
-pluggy==1.6.0
-pydantic==2.12.5
-pydantic_core==2.41.5
-Pygments==2.20.0
-pytest==9.0.2
-typing-inspection==0.4.2
-typing_extensions==4.15.0
+# ASCP core SDK
+anyio>=4.3.0
+jsonschema>=4.22.0
+protobuf>=6.31.1
+pydantic>=2.7.0
+pydantic-settings>=2.2.0
+pyyaml>=6.0.1
+
+# gRPC sidecar adapter
+grpcio>=1.80.0
+grpcio-tools>=1.80.0
+
+# Test runner used by this repository
+pytest>=8.2.0
+pytest-asyncio>=0.23.6
+
+# Optional framework adapters are exposed as pyproject extras:
+#   pip install "ascp[ascp-langchain]"
+#   pip install "ascp[ascp-langgraph]"
+#   pip install "ascp[ascp-crewai]"
+#   pip install "ascp[ascp-llamaindex]"
+#   pip install "ascp[ascp-smolagents]"

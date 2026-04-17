@@ -1,7 +1,7 @@
 .venv/
 venv/
 
-*__pycache__
+__pycache__
 *.pyc
 
 *cache*
@@ -75,18 +75,12 @@ env/
 
 # Jupyter Notebook
 .ipynb_checkpoints
-<<<<<<< HEAD
-=======
 *.ipynb
->>>>>>> origin/layerd
 
 # Data files
 *.csv
 *.xlsx
-<<<<<<< HEAD
-=======
-*.json
->>>>>>> origin/layerd
+*.jsonl
 data/
 datasets/
 *.pkl
@@ -102,16 +96,10 @@ models/
 # Environment variables
 .env
 .env.local
-<<<<<<< HEAD
 dlp_demo_secrets.py
-=======
->>>>>>> origin/layerd
 
 # OS
 *.log
 *.tmp
-<<<<<<< HEAD
 node_modules/
-=======
 node_modules/
->>>>>>> origin/layerd
