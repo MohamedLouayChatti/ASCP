@@ -1,173 +1,178 @@
-# DLP Module Development
+# DLP Module — Development Guide
 
 ## Philosophy
 
-This branch is module-scoped. Development artifacts should stay under `dlp/` whenever possible to reduce merge conflicts when integrating into `main`.
+This branch defines a complete, 5-step ML-enhanced scanning architecture optimised for ASCP security operations. The guiding principle is **defence in depth via layering**: fast deterministic rules catch known-bad patterns cheaply, while the ML layer handles ambiguous or novel content that regexes cannot reliably classify.
 
-## Local Commands
+Development effort should be prioritised in this order:
+1. **Pattern rules** (`patterns.py`, `policy.default.yaml`) — highest ROI, zero ML cost.
+2. **Feature extraction** (`features.py`) — improves ML signal without retraining.
+3. **LoRA adapter** (`ML/train.ipynb`) — last resort; retraining is expensive.
+4. **Core enforcer** (`enforcer.py`) — rarely needs touching; all logic is config-driven.
 
-```bash
-python -m pytest dlp/tests -v
-python -m pytest dlp/tests -v --cov=dlp --cov-report=term-missing
-```
+---
 
-## Optional Developer Dependencies
+## Local Setup
 
-Use `dlp/requirements-dev.txt` if your environment does not already provide tools.
-
-```bash
-pip install -r dlp/requirements-dev.txt
-```
-
-## NER (Named Entity Recognition) Module
-
-### Overview
-
-The NER module provides Named Entity Recognition capabilities using spaCy to detect personally identifiable information (PII) such as:
-- **PERSON**: Names of individuals (e.g., "John Smith")
-- **ORG**: Organizations (e.g., "Google", "Microsoft")
-- **GPE**: Geopolitical entities (e.g., "USA", "France")
-- **LOC**: Physical locations (e.g., "Mount Everest")
-- **DATE**: Temporal expressions (e.g., "January 15, 2024")
-
-### Installation
-
-NER is an optional feature. To use it, install spaCy and the English model:
+### Core (required)
 
 ```bash
-# Install spaCy package
-pip install spacy
-
-# Download the English model
-python -m spacy download en_core_web_sm
+pip install -r requirements.txt
 ```
 
-Alternatively, install via optional dependencies:
+### Development tools (linting, testing, coverage)
 
 ```bash
-pip install "ascp-dlp[ner]"
+pip install -r requirements-dev.txt
 ```
 
-### Configuration
+### ML stack (required for Steps 3 & 4)
 
-Enable NER in your DLP policy YAML:
+```bash
+pip install torch transformers peft bitsandbytes accelerate
+```
+
+### HuggingFace credentials
+
+The base model (`google/gemma-2-2b-it`) is downloaded automatically on first run. You must authenticate first:
+
+```bash
+huggingface-cli login
+# or: export HF_TOKEN="your_token"
+```
+
+The LoRA adapter is bundled locally at `dlp/ML/dlp_lora_package/` — no additional download needed.
+
+---
+
+## Pipeline Architecture
+
+```
+Input Text + Surface
+       │
+       ▼
+┌──────────────────────┐
+│  1. Canary Engine    │  ── Hit → BLOCK (hard stop, no ML)
+│     canary.py        │
+└──────────┬───────────┘
+           │ Clean
+           ▼
+┌──────────────────────┐
+│  2. Pattern Engine   │  ── ALLOW / BLOCK / REDACT / ESCALATE
+│     patterns.py      │     → short-circuit to Step 5
+│     validators.py    │
+│     context.py       │
+└──────────┬───────────┘
+           │ PASS_TO_ML
+           ▼
+┌──────────────────────┐
+│  3. Feature          │
+│     Extraction       │
+│     features.py      │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  4. ML Classification│  ── ALLOW / REDACT / ESCALATE / BLOCK
+│     ml.py            │
+│     (Gemma-2 + LoRA) │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────────────────┐
+│  5. Policy Enforcer              │
+│     enforcer.py                  │
+│     (applies surface_overrides)  │
+└──────────────────┬───────────────┘
+                   │
+                   ▼
+           EnforcementDecision
+```
+
+### File map
+
+| File | Role |
+|---|---|
+| `__init__.py` | Public API: `init`, `inject_*`, `scan_*` |
+| `models.py` | Data classes: `DLPAction`, `DLPResult`, `EnforcementDecision`, etc. |
+| `config.py` | `DLPConfig` dataclass + `load_dlp_config()` YAML loader |
+| `canary.py` | `CanaryEngine`: token generation, injection, exact + fuzzy detection |
+| `patterns.py` | `PatternEngine`: regex matching, redaction, format-preserving substitution |
+| `validators.py` | `MatchValidator`: Luhn algorithm for credit card false-positive elimination |
+| `context.py` | `ContextAnalyzer`: window-based trigger/negation analysis |
+| `features.py` | `extract_features()`: entropy, entity counts, structural signals |
+| `ml.py` | `MLInferenceEngine` singleton + `classify()` entry point |
+| `enforcer.py` | `PolicyEnforcer`: applies per-surface overrides from config |
+| `scanner.py` | `DLPScanner`: orchestrates Steps 1–4, returns `DLPResult` |
+| `messenger.py` | `SafeMessenger`: generates safe user-facing block messages |
+
+---
+
+## Modifying the Pipeline
+
+### Tweaking Pattern Rules (`patterns.py` / `policy.default.yaml`)
+
+Add a new entry under `secret_patterns` or `pii_patterns` in the YAML:
 
 ```yaml
-dlp:
-  enable_ner: true
-  pii_action: REDACT  # or BLOCK, ESCALATE
+secret_patterns:
+  - name: my_custom_token
+    regex: "MYPREFIX-[A-Za-z0-9]{20}"
+    action: BLOCK
 ```
 
-### Implementation Details
+Pattern-level `action` overrides the global `secrets_action` / `pii_action` for that specific pattern. Use `PASS_TO_ML` to defer ambiguous patterns to the ML layer.
 
-**Location**: `dlp/ner.py`
+### Tweaking Feature Extraction (`features.py`)
 
-The `NERDetector` class:
-- Lazy-loads the spaCy model on first use
-- Caches the model to avoid repeated loading
-- Gracefully handles missing spaCy or models
-- Integrates seamlessly with the DLP scanning pipeline
+`extract_features()` returns a flat dict of numeric/boolean signals. Adding a new key here makes it available to the ML prompt in `ml.py` automatically. New signals guide the model without requiring LoRA retraining — prefer this over retraining whenever possible.
 
-**Key Features**:
-- **Lazy Loading**: Model is only loaded when NER is enabled and first needed
-- **Error Handling**: Gracefully degrades if spaCy or model not available
-- **Deduplication**: Avoids double-reporting when regex patterns already caught the same entity
-- **Performance**: Short-circuits expensive NER processing if canary or secret already triggered
+Example: detecting implicit nested JSON structure or specialised log patterns is achievable by adding regex checks to `extract_features()`.
 
-### Testing
+### Bypassing ML for Fast Iteration
 
-Comprehensive tests are provided in `dlp/tests/test_ner.py`:
+If you are iterating on regex rules or config behaviour and do not want to load ~1.5 GB of model weights:
 
-**Unit Tests** (with mocks):
-```bash
-python -m pytest dlp/tests/test_ner.py::TestNERDetectorWithMock -v
-```
+- **Option A**: Do not install `torch` / `transformers`. The scanner detects their absence at import time and skips Steps 3 and 4 entirely, logging a warning.
+- **Option B**: Set `unmatched_action: ALLOW` in your YAML. Unmatched text will be allowed without invoking ML.
 
-- 16 unit tests covering all entity types
-- Tests for configuration respect
-- Tests for error handling and graceful degradation
-- Tests for redaction and blocking actions
+The scanner always executes Steps 1, 2, and 5 regardless of ML availability.
 
-**Integration Tests** (with real model, if available):
-```bash
-python -m pytest dlp/tests/test_ner.py::TestNERDetectorWithRealModel -v
-```
+### Retraining the LoRA Adapter
 
-- Tests with actual spaCy model
-- Real-world text processing
-- Span accuracy validation
+Use `dlp/ML/train.ipynb`. Training data is in `dlp/ML/data/dlp_ml_dataset.jsonl`. The base model must remain `google/gemma-2-2b-it` to match the bundled adapter configuration. After training, replace the contents of `dlp/ML/dlp_lora_package/` and update `adapter_config.json` if hyperparameters changed.
 
-**Integration Tests with Scanner**:
-```bash
-python -m pytest dlp/tests/test_integration.py::TestNERIntegration -v
-```
+---
 
-- Tests NER within the full DLP pipeline
-- Tests all three scan surfaces (OUTPUT, TOOL_ARGS, TOOL_RESULT)
-- Tests interaction with canaries and secrets detection
-- Tests multiple entity detection and redaction
-
-### Running All Tests
+## Testing
 
 ```bash
-# Run all tests including NER
+# Run all tests
 python -m pytest dlp/tests -v
 
-# Run with coverage report
-python -m pytest dlp/tests -v --cov=dlp --cov-report=html --cov-report=term-missing
+# Run with coverage (HTML + terminal)
+python -m pytest dlp/tests -v --cov=dlp --cov-report=term-missing --cov-report=html
 ```
 
-### NER in the DLP Pipeline
+Test files and what they cover:
 
-1. **Regex Scanning** (secrets & PII patterns) - runs first
-2. **NER Scanning** - runs only if:
-   - `enable_ner: true` in config
-   - No BLOCK action already triggered (optimization)
-   - Model successfully loaded
-3. **Deduplication** - NER results compared against regex results
-   - Overlapping spans are skipped to avoid double-counting
-   - Preserves original detection source (regex takes precedence)
+| Test file | Covers |
+|---|---|
+| `test_canary.py` | Canary injection, exact detection, block path |
+| `test_canary_fuzzy.py` | Fuzzy/normalised canary matching |
+| `test_config.py` | YAML loading, defaults, surface overrides |
+| `test_context.py` | Contextual window trigger/negation logic |
+| `test_format_preserving.py` | Format-preserving redaction output |
+| `test_integration.py` | End-to-end scan → enforce paths; ML tests run if `torch` is available |
+| `test_messenger.py` | Safe message generation |
+| `test_models.py` | `DLPAction` priority ordering, dataclass behaviour |
+| `test_patterns.py` | Regex matching, PASS_TO_ML routing |
+| `test_validators.py` | Luhn algorithm correct/incorrect card numbers |
 
-### Example Usage
+Integration tests auto-detect `torch` availability. When the ML stack is present, the test runner exercises the full 5-step path with quantised model inference. When absent, only Steps 1, 2, and 5 are exercised.
 
-```python
-from dlp import DLPConfig, NERDetector, ScanSurface
+---
 
-config = DLPConfig.defaults()
-config.enable_ner = True
+## CI
 
-detector = NERDetector(config)
-
-# Detect NER entities
-text = "John Smith works at Microsoft in Seattle."
-matches = detector.detect(text, ScanSurface.OUTPUT)
-
-for match in matches:
-    print(f"Found {match.pattern_name}: {match.value}")
-    # Output: Found ner_person: John Smith
-    #         Found ner_org: Microsoft
-    #         Found ner_gpe: Seattle
-```
-
-### Troubleshooting
-
-**NER not detecting anything**:
-- Verify `enable_ner: true` in config
-- Check that spaCy and model are installed: `python -m spacy download en_core_web_sm`
-- Check logs for model loading errors
-
-**Poor detection quality**:
-- Current model `en_core_web_sm` is a lightweight, general-purpose model
-- For specialized domains, consider fine-tuning or using larger models
-- Review detected entities to validate accuracy
-
-**Performance concerns**:
-- NER is computationally expensive; results are only used if workflow hasn't already blocked
-- Model is lazily loaded and cached
-- Consider disabling NER if processing speed is critical and regex patterns are sufficient
-
-## CI Template
-
-A reusable CI template is provided at `dlp/ci/workflows/tests.yml`.
-
-Important: GitHub Actions only runs from `.github/workflows/` at repository root. In the target monorepo, copy or adapt this template there.
+The GitHub Actions workflow lives at `dlp/ci/workflows/tests.yml`. It runs `pytest` with coverage on every push and pull request.

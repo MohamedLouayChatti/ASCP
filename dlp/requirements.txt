@@ -1,0 +1,15 @@
+# ASCP DLP — Runtime Dependencies
+#
+# This file lists the minimum dependencies required to run the DLP module.
+#
+# For optional ML Classification (Steps 3 & 4 of the pipeline), also install:
+torch 
+transformers 
+peft
+bitsandbytes
+accelerate
+#
+# For faster HuggingFace model downloads:
+hf-transfer
+
+pyyaml>=6.0

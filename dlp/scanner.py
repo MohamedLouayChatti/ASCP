@@ -53,10 +53,17 @@ class DLPScanner:
 
         # 2. Pattern Engine
         pattern_result = self.pattern_engine.scan(text, surface)
-        
-        secrets = pattern_result.secrets
-        pii = pattern_result.pii
-        
+
+        # 3. Post-processing filters (applied before any action branching)
+        #    a) Luhn validation — removes credit-card false positives when enabled
+        secrets = self.match_validator.filter(pattern_result.secrets)
+        pii     = self.match_validator.filter(pattern_result.pii)
+
+        #    b) Context analysis — downgrades / suppresses matches in example context
+        if self.context_analyzer is not None:
+            secrets = self.context_analyzer.filter(secrets, text)
+            pii     = self.context_analyzer.filter(pii,     text)
+
         violations = []
         for sm in secrets:
             violations.append(f"secret_leak:{sm.pattern_name}")

@@ -39,7 +39,18 @@ def extract_features(text: str, surface: ScanSurface) -> dict[str, Any]:
     is_example_context = bool(re.search(r"\b(example|dummy|sample|placeholder|mock|test)\b", text, flags=re.IGNORECASE))
     is_code_context = bool(re.search(r"\b(def|class|function|import|export|if|while|for)\b[\s:\{]", text))
 
-    num_secrets_detected = len(tokens) # simple proxy for extracted tokens
+    # Count of matches from high-signal patterns — used as an ML feature.
+    # We sum the concrete hit counts already computed above; this is a true
+    # measure of "how many things look like secrets/PII" rather than a noisy
+    # proxy based on token length.
+    num_secrets_detected = (
+        num_emails
+        + num_phones
+        + num_credit_cards
+        + int(has_api_key_pattern)
+        + int(has_db_connection)
+        + int(has_private_key)
+    )
 
     return {
         "num_emails": num_emails,
