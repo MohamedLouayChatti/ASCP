@@ -1,0 +1,51 @@
+version: "1.0"
+
+capabilities:
+  project_lookup:
+    risk: low
+    scopes:
+      - custom
+    approval_required: false
+    description: Safe in-memory lookup used by the examples.
+
+  file_read:
+    risk: high
+    scopes:
+      - local_fs
+    approval_required: true
+    description: File reads require human approval in this demo.
+    constraints:
+      deny_path_traversal: true
+      path_allowlist:
+        - README.md
+
+  send_email:
+    risk: high
+    scopes:
+      - network
+      - external_api
+      - write
+    approval_required: true
+    description: Outbound email requires human approval in this demo.
+
+  example_catch_all:
+    risk: high
+    scopes:
+      - custom
+    approval_required: true
+    description: Any unrecognized tool requires approval.
+    match:
+      catch_all: true
+
+capability_sequences:
+  transition_graph:
+    __start__:
+      - project_lookup
+      - file_read
+      - send_email
+    project_lookup:
+      - send_email
+      - project_lookup
+    file_read:
+      - send_email
+    send_email: []
