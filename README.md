@@ -1,584 +1,614 @@
-﻿# ASCP Data Leakage Prevention (DLP) Module
+﻿# ASCP — Agent Security Control Plane
 
-A production-grade Data Leakage Prevention system designed to detect and prevent sensitive information leakage through language model outputs and tool interactions. The module combines pattern-based detection, cryptographic canary injection, and optional Named Entity Recognition to enforce configurable security policies.
+**A production-grade security SDK for tool-using AI agents.**
 
-## Overview
+ASCP sits between your agent framework and the outside world, enforcing a layered security policy across every phase of an agent invocation — from grounding and capability validation, through data leakage prevention, to risk scoring and audit logging. It works in-process or as a gRPC sidecar.
 
-The DLP module operates as Layer C of the ASCP framework, providing real-time scanning and enforcement of data protection policies across three primary surfaces:
-
-- **OUTPUT**: Language model generated text
-- **TOOL_ARGS**: Tool parameters and arguments before execution
-- **TOOL_RESULT**: Data returned from external tools
-
-The system employs an advanced 10-layer detection pipeline across three categories of sensitive information:
-
-1. **Secrets**: 
-   - Exact pattern matching (OpenAI, AWS, GitHub)
-   - **Shannon Entropy Detection** catches novel formats using mathematical randomness.
-2. **Personally Identifiable Information (PII)**: 
-   - Regex matching (Email, IPv4, Credit Cards)
-   - **Luhn Algorithm Validation** massively reduces credit card false positives.
-   - Optional **Named Entity Recognition (NER)** via spaCy.
-3. **Canary Leaks & Intellectual Property**: 
-   - Cryptographic canary token injection.
-   - **Fuzzy Canary Matching** detects subtle token manipulation by LLMs.
-   - **Document Fingerprinting** blocks verbatim reproduction of confidential RAG contexts.
-
-Advanced processing capabilities include **Contextual Window Analysis** to downgrade examples/documentation safely, **Format-Preserving Redaction** to keep pipelines running, and **Structured Data Scanning** for precise JSON/dict path attribution.
-
-## Design Philosophy
-
-The DLP module prioritizes security, correctness, and observability:
-
-- **Security-First**: Uses cryptographic randomness (`secrets` module) for canary generation. Prevents information leakage through placeholder patterns.
-- **Explicit Policy Encoding**: All detection rules and enforcement decisions are defined in YAML configuration, enabling policy-as-code practices.
-- **Comprehensive Telemetry**: Returns detailed violation information to enable proper auditing and incident response.
-- **Composable Enforcement**: Supports multiple enforcement actions (ALLOW, REDACT, ESCALATE, BLOCK) with per-surface overrides.
-
-## Installation
-
-### Dependencies
-
-```bash
-pip install pyyaml  # Required for policy configuration
-pip install spacy   # Optional, for Named Entity Recognition
-python -m spacy download en_core_web_sm  # Optional, for NER
+```
+User Input → [ Layer A ] → [ Layer B ] → [ Layer C ] → [ Layer D ] → Response
+               Grounding     Capability    DLP +          Risk Score
+               & Trust       Contracts     Canary         & Telemetry
 ```
 
-The module gracefully degrades if PyYAML or spaCy are unavailable, logging appropriate warnings.
+---
 
-### Setup
+## Table of Contents
+
+- [Architecture Overview](#architecture-overview)
+- [Quick Start](#quick-start)
+- [Layer A — Grounding & Trust](#layer-a--grounding--trust)
+- [Layer B — Capability Contracts](#layer-b--capability-contracts)
+- [Layer C — Data Leakage Prevention](#layer-c--data-leakage-prevention)
+- [Layer D — Risk Scoring & Telemetry](#layer-d--risk-scoring--telemetry)
+- [Adapters](#adapters)
+- [Configuration](#configuration)
+- [Testing](#testing)
+- [Installation](#installation)
+- [Project Structure](#project-structure)
+
+---
+
+## Architecture Overview
+
+ASCP is organized into four independent but coordinated layers. Each layer has a single responsibility and communicates through well-defined data structures. All layers are coordinated by the `ASCPOrchestrator`.
+
+### The Four Layers
+
+| Layer | Module | Responsibility |
+|---|---|---|
+| **A** | `grounding/` | Hallucination detection, claim support, context sufficiency |
+| **B** | `layerb/` | Capability contracts, tool call validation, policy enforcement |
+| **C** | `dlp/` | Secrets/PII detection, canary injection, format-preserving redaction |
+| **D** | `layerd/` | Weighted risk scoring, JSONL/SQLite telemetry, incident reports |
+
+### The Five Security Invariants
+
+Every release must uphold these guarantees:
+
+| Code | Guarantee |
+|---|---|
+| **I1** | No forbidden tool ever executes |
+| **I2** | Allowed tools only run with safe, validated arguments |
+| **I3** | Secrets and canary tokens never appear in outputs |
+| **I4** | Untrusted content cannot change policy |
+| **I5** | Every decision has a reason code and a full audit trace |
+
+---
+
+## Quick Start
+
+```python
+from ascp_integration.orchestrator import ASCPOrchestrator
+
+orchestrator = ASCPOrchestrator(session_id="my-session")
+
+# Begin a tracked invocation
+correlation_id = "req-001"
+session_id, decision = await orchestrator.begin_invocation(correlation_id)
+
+# Hook into any lifecycle stage
+decision = await orchestrator.hook_user_input(correlation_id, "Summarize these documents.")
+decision = await orchestrator.hook_rag_retrieval(correlation_id, documents)
+decision = await orchestrator.hook_tool_call(correlation_id, "web_fetch", {"url": "..."})
+decision = await orchestrator.hook_agent_output(correlation_id, "The answer is...")
+
+await orchestrator.end_invocation(correlation_id, session_id)
+```
+
+`ASCPDecision` is returned at every hook:
+
+```python
+@dataclass
+class ASCPDecision:
+    status: str          # "ALLOW" | "BLOCK" | "REDACT" | "ESCALATE"
+    reason_code: str     # Machine-readable reason
+    violations: list[str]
+    risk_score: float    # 0.0 – 1.0
+    severity: str        # "low" | "moderate" | "high" | "critical"
+    trace: str           # Human-readable audit string
+```
+
+---
+
+## Layer A — Grounding & Trust
+
+**Module**: `grounding/`
+
+Layer A evaluates the factual grounding of an LLM's final answer against its retrieved context. It outputs a trust vector used by Layer D to weight the risk score.
+
+### What it does
+
+- **Claim extraction** (`claim_extractor.py`, `llm_claim_extractor.py`): Extracts atomic factual claims from the LLM's answer. Supports both regex-based extraction and LLM-assisted extraction (via local Ollama or API).
+- **Support checking** (`support_checker.py`): For each extracted claim, determines whether supporting evidence exists in the retrieved documents.
+- **Sufficiency checking** (`sufficiency.py`): Evaluates whether the retrieved context is complete enough to answer the query, independent of what the model actually said.
+- **Trust vector assembly** (`trust_vector.py`): Combines grounding score (claim support ratio) and context sufficiency into a single structured payload for Layer D.
+
+### Usage
+
+```python
+from grounding.trust_vector import assemble_trust_vector
+
+trust = assemble_trust_vector(
+    query="What is the refund policy?",
+    answer="Refunds are processed within 5 business days.",
+    documents=retrieved_docs,
+)
+# trust["grounding_score"]   → 0.0–1.0 (claim support ratio)
+# trust["is_sufficient"]     → bool
+# trust["unsupported_claims"] → list of strings
+```
+
+### Extractor modes
+
+Configured via `.env` or environment variables:
+
+```env
+EXTRACTOR_MODE=llm_local   # Use local Ollama
+EXTRACTOR_MODE=regex        # Fast, no model needed
+```
+
+---
+
+## Layer B — Capability Contracts
+
+**Module**: `layerb/`
+
+Layer B validates every tool call, resource access, and prompt before execution. It enforces a policy-as-code contract that specifies what an agent is allowed to do and under what conditions.
+
+### What it validates
+
+- JSON Schema validation of tool arguments
+- Path traversal and denylist enforcement for file operations
+- URL allowlisting and SSRF protection for web fetches
+- SQL safety rules for database queries
+- Agent and framework identity constraints
+- Workflow sequencing and precondition rules
+- Argument and body size limits
+- Approval gating for high-risk operations
+
+### Usage
+
+```python
+from layerb import LayerBEngine
+
+engine = LayerBEngine.from_defaults()
+
+result = engine.validate_capability(
+    capability_name="file_read",
+    args={"path": "/etc/passwd"},
+    agent_id="research-agent",
+)
+# result.decision → "allow" | "block" | "require_approval"
+# result.reason   → human-readable explanation
+```
+
+### CLI
+
+```bash
+python -m layerb paths        # Show active policy file locations
+python -m layerb list         # List all registered capabilities
+python -m layerb events       # Tail recent security events
+python -m layerb feedback --report  # Generate policy improvement suggestions
+```
+
+### Policy configuration
+
+Layer B ships with built-in defaults for common capability families (`file_read`, `file_write`, `web_fetch`, `db_query`, `shell_exec`). Override them with a local policy file:
+
+```yaml
+# policy/tool_permissions.yaml
+capabilities:
+  my_custom_reader:
+    risk: high
+    scopes: [local_fs]
+    approval_required: true
+    constraints:
+      deny_path_traversal: true
+      path_denylist:
+        - /etc
+        - /root
+```
+
+```python
+engine = LayerBEngine(policy_path="policy/tool_permissions.yaml")
+```
+
+### Contract resolution order
+
+1. Exact capability name match
+2. Argument schema hash match
+3. Inferred family match (`file_read`, `web_fetch`, etc.)
+4. Catch-all default
+5. Unknown capability mode (configurable via `LAYERB_UNKNOWN_CAPABILITY_MODE`)
+
+---
+
+## Layer C — Data Leakage Prevention
+
+**Module**: `dlp/`
+
+Layer C scans every surface of an agent's execution for secrets, PII, and canary token leaks. It operates pre-LLM (canary injection) and post-LLM (output scanning), and enforces configurable enforcement actions.
+
+### Detection pipeline
+
+Each scan runs up to ten detection steps across three categories:
+
+**Secrets**
+- Exact regex patterns (OpenAI, AWS, GitHub tokens)
+- Shannon entropy detection for novel secret formats
+
+**PII**
+- Regex patterns (email, IPv4, credit cards)
+- Luhn algorithm validation to eliminate false positive credit card matches
+- Optional Named Entity Recognition via spaCy (PERSON, ORG, GPE, LOC, DATE)
+
+**Canary & IP**
+- Cryptographic canary token injection using `secrets` module
+- Fuzzy canary matching to catch LLM token manipulations
+- Document fingerprinting to block verbatim RAG context reproduction
+
+### Enforcement actions
+
+Applied in priority order: `BLOCK > ESCALATE > REDACT > ALLOW`
+
+| Action | Behavior |
+|---|---|
+| **ALLOW** | No violation. Text passes unchanged. |
+| **REDACT** | PII replaced with `[REDACTED_category_pattern]` placeholders. |
+| **ESCALATE** | Decision deferred to human review. Output blocked pending approval. |
+| **BLOCK** | Critical violation. Output replaced with a safe user-facing message. |
+
+### Usage
 
 ```python
 import dlp
 
-# Option 1: Use built-in defaults (no configuration file needed)
-dlp.init()
+dlp.init()  # Uses built-in defaults, no config file needed
 
-# Option 2: Use custom policy file
-from pathlib import Path
-dlp.init(Path("policy.yaml"))  # See policy.default.yaml template
+# Scan LLM output
+decision = dlp.scan_output("Here is your API key: sk-abc123...")
+if decision.should_block:
+    return decision.safe_message
+
+# Scan tool arguments before execution
+decision = dlp.scan_tool_args("execute_query", {"password": "hunter2"})
+if decision.should_block:
+    raise PermissionError(decision.safe_message)
+
+# Inject canary tokens into RAG context
+docs, token, label = dlp.inject_canaries_into_context(retrieved_docs)
+# If the LLM echoes `token` in output, scan_output() will catch it
 ```
 
-## Demo Secret Fixtures
+### EnforcementDecision
 
-The end-to-end demo uses secret-like test values to validate BLOCK behavior for secret leakage scenarios.
+```python
+@dataclass
+class EnforcementDecision:
+    action: DLPAction             # ALLOW | REDACT | ESCALATE | BLOCK
+    clean_text: str               # Safe or redacted text
+    should_block: bool
+    should_escalate: bool
+    violations: list[str]
+    safe_message: str | None      # User-facing message (never leaks violation detail)
+    escalation_event: dict | None # Payload for review queue
+    dlp_result: DLPResult | None  # Full scan result for telemetry
+```
 
-For safety, those values are loaded from a local file that is not committed:
+### Custom policy
 
-1. Copy `dlp_demo_secrets_example.py` to `dlp_demo_secrets.py`
-2. Edit `dlp_demo_secrets.py` with local test-only values
-3. Run `python dlp_demo.py`
+```python
+from pathlib import Path
+import dlp
 
-Notes:
+dlp.init(Path("config/policy.yaml"))
+```
 
-- `dlp_demo_secrets.py` is gitignored and must stay local
-- If the local file is missing, the demo still runs with placeholders and skips secret-dependent scenarios
+See `dlp/policy.default.yaml` for the full documented template.
+
+### Machine learning backend (optional)
+
+A fine-tuned LoRA adapter (Gemma 2 2B base) is available under `dlp/ML/dlp_lora_package/` for ML-backed DLP classification. Enable it with:
+
+```bash
+pip install "ascp[ascp-ml]"
+```
+
+Training and generation notebooks are in `dlp/ML/`.
+
+---
+
+## Layer D — Risk Scoring & Telemetry
+
+**Module**: `layerd/`
+
+Layer D is a passive observation layer. It receives events from all other layers, computes a unified risk score, and logs everything. It never blocks, detects, or executes — it only observes, measures, and reports.
+
+### Risk score formula
+
+```
+risk_score = 0.35 × (1 − grounding_score)   # Layer A signal
+           + 0.30 × tool_risk_value           # Layer B signal
+           + 0.25 × leakage_signal            # Layer C signal
+           + 0.10 × injection_signal          # Prompt injection signal
+```
+
+### Severity thresholds
+
+| Score | Severity | Response |
+|---|---|---|
+| 0.00 – 0.29 | Low | Log only |
+| 0.30 – 0.59 | Moderate | Emit warning |
+| 0.60 – 0.79 | High | Require human approval |
+| 0.80 – 1.00 | Critical | Block + auto-generate incident report |
+
+### Custom Layer D configuration
+
+Layer D supports custom scoring parameter initialization through `layerd.risk.config.ScoringConfig`.
+You can override weights, thresholds, and action floors from Python or YAML, then pass the config into `compute_risk_score`.
+
+```python
+from layerd.risk.config import ScoringConfig
+from layerd.risk.models import RiskInput
+from layerd.risk.scorer import compute_risk_score
+
+custom_cfg = ScoringConfig.from_dict({
+    "layer_a": {
+        "grounding": 0.18,
+        "hallucination": 0.30,
+    },
+    "layer_c": {
+        "dlp_block_floor": 0.92,
+    },
+    "combination": {
+        "layer_a": 0.20,
+        "layer_b": 0.30,
+        "layer_c": 0.50,
+    },
+    "severity": {
+        "critical": 0.90,
+        "high": 0.70,
+        "medium": 0.35,
+    },
+})
+
+result = compute_risk_score(
+    RiskInput(tool_risk_level="LOW"),
+    config=custom_cfg,
+)
+```
+
+Or load a YAML file:
+
+```python
+custom_cfg = ScoringConfig.from_yaml("config/layerd_risk.yaml")
+```
+
+### Three-ID audit trail
+
+Every event carries three IDs that link the full trace:
+
+| ID | Scope |
+|---|---|
+| `session_id` | Entire conversation (detects multi-turn coercion attacks) |
+| `correlation_id` | One request / turn |
+| `event_id` | One specific event |
+
+### Storage
+
+Two simultaneous append-only sinks. Write failures never crash the server.
+
+- **JSONL** — one JSON object per line, plain text, grep-friendly
+- **SQLite** — relational, queryable
+
+```sql
+SELECT * FROM events WHERE invariant_violated = 'I3';
+SELECT * FROM events WHERE severity = 'critical' ORDER BY timestamp DESC;
+```
+
+---
+
+## Adapters
+
+**Module**: `ascp_integration/`
+
+ASCP exposes a consistent security lifecycle to every major agent framework through adapter classes. All adapters wrap `ASCPOrchestrator` and map framework-native callbacks to ASCP hooks.
+
+### Available adapters
+
+| Adapter | Class | Framework |
+|---|---|---|
+| LangGraph | `ASCPLangGraphAdapter` | LangGraph / LangChain callback handler |
+| LangChain | `ASCPLangChainAdapter` | LangChain callback handler |
+| CrewAI | `ASCPCrewAIAdapter` | CrewAI flow/task callbacks |
+| LlamaIndex | `ASCPLlamaIndexAdapter` | LlamaIndex query engines and retrievers |
+| smolagents | `ASCPSmolagentsAdapter` | HuggingFace smolagents |
+| gRPC | `ASCPGRPCAdapter` | Out-of-process sidecar (non-Python agents) |
+
+### LangGraph / LangChain
+
+```python
+from ascp_integration.orchestrator import ASCPOrchestrator
+from ascp_integration.adapters.langgraph_adapter import ASCPLangGraphAdapter
+
+orchestrator = ASCPOrchestrator(session_id="session-1")
+adapter = ASCPLangGraphAdapter(orchestrator, agent_id="research-agent")
+
+config = {"callbacks": [adapter]}
+# Pass config to graph.invoke(), chain.invoke(), etc.
+```
+
+### CrewAI
+
+```python
+adapter = ASCPCrewAIAdapter(orchestrator, agent_id="crew-researcher")
+
+payload = await adapter.before_kickoff(
+    system_prompt="You are a careful analyst.",
+    user_input="Summarize the documents.",
+    documents=[{"text": "...", "source": "kb"}],
+)
+tool_args = await adapter.validate_tool("web_fetch", {"url": "https://example.com"})
+answer = await adapter.after_kickoff("Final answer text")
+```
+
+### gRPC sidecar
+
+The gRPC contract is defined in `ascp_integration/adapters/proto/ascp.proto`.
+
+```python
+from ascp_integration.adapters.grpc_adapter import serve
+
+await serve(host="0.0.0.0", port=50051, tls_key="key.pem", tls_cert="cert.pem")
+```
+
+Implemented RPCs: `BeginInvocation`, `EndInvocation`, `HookSystemPrompt`, `HookUserInput`, `HookPromptGet`, `HookRagRetrieval`, `HookResourceRead`, `HookToolCall`, `HookToolResult`, `HookAgentOutput`, `HookStreamingAgentOutput`.
+
+> **Note**: Without TLS credentials, the adapter logs a warning and should be treated as a local-development sidecar only.
+
+---
 
 ## Configuration
 
-The DLP system is configured via YAML policy files. **A complete default policy template is available at [`policy.default.yaml`](policy.default.yaml)** with comprehensive documentation for external developers.
+### Environment variables
 
-### Optional YAML Configuration
+| Variable | Default | Description |
+|---|---|---|
+| `EXTRACTOR_MODE` | `regex` | Claim extraction mode: `regex`, `llm_local`, `llm_api` |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint for local LLM extraction |
+| `OLLAMA_MODEL` | `llama3.2` | Model name for local extraction |
+| `OLLAMA_TIMEOUT` | `30.0` | Ollama request timeout in seconds |
+| `LAYERB_EVENT_LOG` | `logs/layer_b/events.jsonl` | Layer B event log path |
+| `LAYERB_UNKNOWN_CAPABILITY_MODE` | — | How to handle unregistered tools |
 
-If no custom policy file is provided to `dlp.init()`, the system automatically falls back to sensible built-in defaults that include:
+Copy `.env.example` to `.env` and customize before running.
 
-- **Secrets Detection**: OpenAI, AWS, and GitHub token patterns
-- **PII Detection**: Email addresses and IPv4 addresses
-- **Canary Tokens**: Three example canary labels for tracking information leakage
+### DLP policy
 
-This means you can use the DLP module without providing a configuration file:
-
-```python
-import dlp
-
-# Uses built-in defaults automatically
-dlp.init()  # No file needed; uses DLPConfig.defaults()
-```
-
-### Custom Policy Files
-
-To customize enforcement actions, detection patterns, or canary labels, copy `policy.default.yaml` and modify it:
-
-```python
-from pathlib import Path
-import dlp
-
-# Initialize with custom policy
-dlp.init(Path("policy.yaml"))
-```
-
-### Configuration Example
-
-Here's a complete policy configuration (also fully documented in [`policy.default.yaml`](policy.default.yaml)):
+A fully documented policy template is available at `dlp/policy.default.yaml`. Key options:
 
 ```yaml
 dlp:
-  canary_action: BLOCK              # Action on canary leaks
-  canary_salt: "production_salt_change_me"
-  secrets_action: BLOCK             # Action on detected secrets
-  pii_action: REDACT                # Action on detected PII
-  enable_ner: true                  # Enable Named Entity Recognition
-  
-  canary_labels:
-    - api_credential_mock
-    - db_password
-    - sys_admin_token
-  
-  secret_patterns:
-    - name: openai_key
-      regex: "sk-[A-Za-z0-9]{48}"
-    - name: aws_access_key
-      regex: "AKIA[0-9A-Z]{16}"
-    - name: github_token
-      regex: "ghp_[A-Za-z0-9]{36}"
-  
-  pii_patterns:
-    - name: email
-      regex: "[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]*[a-zA-Z0-9-]"
-    - name: ipv4
-      regex: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"
-    - name: credit_card
-      regex: "\\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\\b"
-
-  # Advanced Features (all strictly opt-in)
-  luhn_validation: true
-  format_preserving_redaction: true
-  enable_structured_scan: false
-
+  canary_action: BLOCK
+  secrets_action: BLOCK
+  pii_action: REDACT
+  enable_ner: true
   entropy:
     enabled: true
     threshold: 4.5
-  
-  context_analysis:
-    enabled: true
-    window: 50
-    on_negation: downgrade
-
   canary_fuzzy_match: true
-  canary_fuzzy_overlap: 0.8
-
   fingerprinting:
     enabled: true
     threshold: 0.3
 ```
 
-### Configuration Validation
-
-The loader performs validation checks:
-
-- **Empty Pattern Lists**: If both `secret_patterns` and `pii_patterns` are empty, a CRITICAL log warning is issued to prevent silent degradation.
-- **Missing Fields**: Unspecified fields use sensible defaults defined in `DLPConfig.defaults()`.
-- **Import Errors**: PyYAML import failures are caught gracefully; the system logs a warning and uses default configuration.
-
-## Public API
-
-All functions are defined in `dlp/__init__.py` and require `init()` to be called first.
-
-### Core Scanning Functions
-
-#### `scan_output(text: str) -> EnforcementDecision`
-
-Scans language model output for secrets, PII, and canary leaks.
-
-```python
-decision = dlp.scan_output("Here is my API key: sk-...")
-if decision.should_block:
-    return decision.safe_message  # User-friendly error message
-```
-
-#### `scan_tool_args(tool_name: str, args: dict[str, Any]) -> EnforcementDecision`
-
-Scans tool arguments before execution. Tool arguments always receive stricter enforcement.
-
-```python
-decision = dlp.scan_tool_args("execute_query", {"password": "secret123"})
-if decision.should_block:
-    raise PermissionError(decision.safe_message)
-```
-
-#### `scan_tool_result(tool_name: str, result: dict[str, Any]) -> EnforcementDecision`
-
-Scans tool results after execution. Results may receive different enforcement than outputs.
-
-```python
-decision = dlp.scan_tool_result("database_query", {"user_emails": [...]}
-```
-
-#### `inject_canaries_into_context(docs: list[dict[str, str]]) -> tuple[list[dict[str, str]], str | None, str | None]`
-
-Injects cryptographic canary tokens into retrieved documents to detect unauthorized leakage.
-
-```python
-docs, token, label = dlp.inject_canaries_into_context(retrieved_documents)
-# token: "CANARY-a1b2c3d4e5f6g7h8"
-# label: "api_credential_mock"
-
-# Pass docs to model. If model leaks the token, detection occurs in subsequent scan_output()
-```
-
-### EnforcementDecision Object
-
-Contains the final policy determination:
-
-```python
-@dataclass
-class EnforcementDecision:
-    action: DLPAction                    # ALLOW, REDACT, ESCALATE, or BLOCK
-    clean_text: str                      # Redacted or safe message text
-    should_block: bool                   # True if request must be rejected
-    should_escalate: bool                # True if human review required
-    violations: list[str]                # Detected violation types
-    safe_message: str | None             # User-facing message if blocked
-    escalation_event: dict | None        # Data for review queue
-    dlp_result: DLPResult | None         # Underlying scan results for telemetry
-```
-
-## Enforcement Actions
-
-Actions are applied in priority order: `BLOCK > ESCALATE > REDACT > ALLOW`.
-
-### ALLOW
-No violation detected. Text passes through unchanged.
-
-### REDACT
-Non-critical PII detected. Matching spans are replaced with placeholders (`[REDACTED_category_pattern]`). Text is returned cleaned.
-
-### ESCALATE
-Policy violation detected but decision deferred to human review. The `escalation_event` dictionary contains detection details for a review queue. Output is blocked pending review.
-
-### BLOCK
-Critical violation (canary leak or secret) detected. Output is replaced with a safe message. No violation details are leaked to the user.
-
-## Architecture
-
-### Core Components
-
-#### `models.py`
-Defines core data structures and enumerations:
-
-- `DLPAction`: Enum for enforcement actions
-- `ScanSurface`: Enum for detection surfaces (OUTPUT, TOOL_ARGS, TOOL_RESULT)
-- `DLPMatch`: Individual match detected by scanners
-- `CanaryHit`: Canary token detection
-- `DLPResult`: Aggregated scan results
-- `EnforcementDecision`: Final policy decision
-
-#### `config.py`
-Configuration loading and validation:
-
-- `DLPConfig`: Dataclass holding all configuration state
-- `load_dlp_config()`: Loads and validates YAML policy files
-- `_parse_action()`: Converts action strings to enums
-
-Ensures empty pattern lists are detected and logged as CRITICAL warnings.
-
-#### `canary.py`
-Canary seed and detection:
-
-- `CanaryEngine.seed()`: Initializes label-to-token mappings using SHA256 hashing
-- `CanaryEngine.inject_into_context()`: Injects canary tokens into documents. Returns injected docs plus the injected token and label as a tuple for per-request tracking (avoiding shared mutable state).
-- `CanaryEngine.detect()`: Scans text for known canary tokens
-- `CanaryEngine.rotate_canaries()`: Regenerates token mappings (for periodic rotation)
-
-Uses `secrets.choice()` and `secrets.randbelow()` for cryptographic randomness.
-
-#### `patterns.py`
-Regex-based pattern matching and redaction:
-
-- `PatternEngine.scan_text()`: Scans text against configured patterns, returns matches and redacted text in a single pass
-- `PatternEngine.apply_redactions()`: Static method for applying redactions with overlap merging
-- `PatternEngine.scan_args()`: JSON-serializes tool arguments for comprehensive scanning
-
-Overlapping matches are merged into a single `[REDACTED]` placeholder to prevent information leakage about detection overlap.
-
-#### `ner.py`
-Optional Named Entity Recognition via spaCy:
-
-- `NERDetector.detect()`: Uses spaCy models to identify PERSON, ORG, GPE, LOC, DATE entities
-- Graceful degradation: If spaCy is unavailable or models cannot be loaded, returns empty matches and logs warnings
-- Lazy loading: Model is only loaded on first detection call
-
-#### *Advanced Detectors* (`entropy.py`, `validators.py`, `context.py`, `fingerprint.py`, `structured.py`)
-- `EntropyScanner`: Calculates Shannon entropy for catching novel secrets.
-- `MatchValidator`: Runs Luhn checksums on credit cards.
-- `ContextAnalyzer`: Suppresses non-critical matches surrounded by 'documentation' keywords.
-- `DocumentFingerprinter`: Retains stateful word trigrams of injected context to block verbatim reproduction.
-- `scan_dict()`: Recursively walks JSON tools/results for exact path attribution.
-
-#### `scanner.py`
-Orchestrates all detection engines:
-
-- `DLPScanner.scan()`: Main entry point coordinating canary, regex, and NER scanning
-- Short-circuit logic: Stops expensive NER scanning if canary or secret already detected
-- Unified redaction: Collects all redaction spans (regex + NER) and applies in single pass to maintain offset correctness
-
-#### `enforcer.py`
-Policy enforcement and decision logic:
-
-- `PolicyEnforcer.enforce()`: Combines scan results with policy overrides (e.g., TOOL_ARGS always blocks on secrets)
-- Per-surface overrides: Different enforcement rules for different surfaces
-- Safe messaging: Generates user-facing messages without leaking violation details
-- Escalation routing: Creates escalation event payloads for review queues
-
-#### `messenger.py`
-User-facing message generation:
-
-- `SafeMessenger.get_message()`: Returns appropriate safe messages based on action and surface
-- Surface-aware: TOOL_ARGS/TOOL_RESULT return structured codes; OUTPUT returns polite user messages
-- No information leakage: Messages never contain matched values or violation details
-
-### Data Flow
-
-```text
-Input Text / Tool Dictionary
-    ↓
-DLPScanner.scan_structured()
-    ├→ Structured Walk (JSON elements)
-    │   ├→ PatternEngine.scan() (Regex)
-    │   ├→ MatchValidator.filter() (Luhn validation)
-    │   ├→ ContextAnalyzer.filter() (Window suppression)
-    │   └→ EntropyScanner.scan() (Shannon entropy)
-    ├→ Global String Pass
-    │   ├→ CanaryEngine.detect() (Exact + Fuzzy)
-    │   ├→ NERDetector.detect() (Optional spaCy)
-    │   └→ DocumentFingerprinter.scan() (Verbatim checks)
-    ↓
-    Collect all violations (with precise JSON paths) and redactions
-    ↓
-    Apply unified redaction / Format-preserving placeholders
-    ↓
-DLPResult
-    ↓
-PolicyEnforcer.enforce()
-    ↓
-SafeMessenger.get_message()
-    ↓
-EnforcementDecision
-```
+---
 
 ## Testing
 
-### Run All Tests
+### Run all tests
 
 ```bash
-pytest dlp/tests -v
+pytest                                 # Runs dlp/tests (default, per pyproject.toml)
+pytest tests/ ascp_integration/tests/ # Layer B integration + adapter tests
+pytest layerd/tests/                   # Layer D telemetry and risk tests
 ```
 
-### Run with Coverage
+### With coverage
 
 ```bash
 pytest dlp/tests -v --cov=dlp --cov-report=term-missing
 ```
 
-### Test Suites
+### Demo
 
-- **test_canary.py**: Canary injection, detection, and rotation
-- **test_config.py**: Configuration loading with valid and empty patterns
-- **test_integration.py**: End-to-end scanning workflows including canary leaks and NER paths
-- **test_messenger.py**: Safe message generation for all action types
-- **test_patterns.py**: Regex pattern matching and redaction logic
+```bash
+# 1. Copy and configure the secrets fixture
+cp dlp_demo_secrets_example.py dlp_demo_secrets.py
+# Edit dlp_demo_secrets.py with local test-only values
 
-All tests use the public API; no tests access private attributes.
-
-## Recent Improvements
-
-### Critical Fixes
-
-1. **Re-initialization Support**: Removed early-return guard in `init()` allowing proper re-initialization with different policies in tests.
-
-2. **Escalation Logic**: Fixed overly broad escalation check. `should_escalate` now correctly triggers only on ESCALATE action, not BLOCK.
-
-3. **Canary Concurrency**: Removed shared mutable state (`_last_injected`). `inject_into_context()` now returns the injected token directly, enabling proper per-request tracking.
-
-4. **Cryptographic Randomness**: Replaced `random` module with `secrets` for canary token selection and document injection.
-
-### Security Improvements
-
-5. **Configurable Canary Labels**: Canary labels now loaded from configuration, enabling decentralized policy management.
-
-6. **Configuration Validation**: Empty pattern lists trigger CRITICAL warnings, preventing silent security degradation.
-
-7. **Unified Redaction**: NER and regex matches processed in single pass using span-based replacement, preventing unintended global string replacements.
-
-8. **Placeholder Standardization**: Changed `[REDACTED_multiple]` to single `[REDACTED]` to prevent information leakage about match overlaps.
-
-### Code Quality
-
-9. **Modern Type Hints**: Updated to Python 3.9+ syntax (`list[...]`, `str | None` instead of `List[...]`, `Optional[str]`).
-
-10. **Graceful Degradation**: PyYAML import moved inside function with proper exception handling.
-
-11. **Rich Telemetry**: `EnforcementDecision` now includes `dlp_result` for complete violation information without requiring double queries.
-
-## Module Integration
-
-This module is designed for integration into the ASCP framework:
-
-- Self-contained structure minimizes root-level conflicts
-- Policy-as-code approach enables centralized governance
-- **Optional configuration**: Works with built-in defaults if no custom policy provided
-- Detailed violation telemetry supports Layer D auditing
-- Per-surface enforcement enables nuanced policy implementation
-
-### Initialization Options
-
-**For development or quick start**: Use built-in defaults
-
-```python
-from pathlib import Path
-import dlp
-
-# Application startup - uses built-in defaults
-dlp.init()
+# 2. Run the end-to-end demo
+python dlp_demo.py
 ```
 
-**For production deployments**: Provide a custom policy file
+### Test suites
 
-```python
-from pathlib import Path
-import dlp
-
-# Copy policy.default.yaml to your deployment location, customize as needed
-dlp.init(Path("config/policy.yaml"))
-```
-
-See [`policy.default.yaml`](policy.default.yaml) for all available configuration options and production deployment guidelines.
-
-## Development Guidelines
-
-### Adding New Pattern Types
-
-1. Define regex pattern in `policy.yaml`
-2. Run tests to ensure no regressions
-3. All patterns are category-tagged (secret/pii)
-
-### Adding New NER Entity Types
-
-1. Update `pii_labels` set in `ner.py`
-2. Ensure spaCy model supports the entity type
-3. Add test case with mocked detection
-
-### Adding New Enforcement Actions
-
-1. Extend `DLPAction` enum in `models.py`
-2. Update `PolicyEnforcer.enforce()` logic
-3. Update `SafeMessenger.get_message()` with appropriate messages
-4. Add test cases covering new action
-
-## Performance Considerations
-
-- Canary injection uses deterministic SHA256 hashing (not cryptographic generation) for token derivation from labels, enabling consistency without state storage
-- NER is only executed if canary and secret checks pass, reducing expensive model calls
-- Pattern matching is short-circuited at BLOCK level
-- All redactions applied in single pass to minimize string operations
-
-## License and Repository
-
-This module is part of the ASCP project.
-
-Repository: https://github.com/MohamedLouayChatti/ASCP
-
-Branch: DLP
-# Layer D — Telemetry & Risk Scoring
-
-Layer D is a **passive observation layer**. It receives events from every other layer, computes a unified risk score, logs everything, and generates incident reports when things go wrong. It never detects threats, blocks actions, or executes tools.
-
----
-
-## How It Works
-
-```
-Layer A  →  grounding_score, hallucination_risk
-Layer B  →  tool_call_attempt, policy_block
-Layer C  →  dlp_hit, canary_leak
-                    ↓
-              scorer.py
-              weighted formula → risk score [0.0, 1.0]
-                    ↓
-        ┌───────────┬────────────┬──────────────┐
-        │ JSONL /   │ Severity   │ Incident     │
-        │ SQLite    │ level      │ report       │
-        └───────────┴────────────┴──────────────┘
-```
-
----
-
-## The Three-ID System
-
-Every event carries three IDs that link the full audit trail.
-
-| ID | Scope |
-|---|---|
-| `session_id` | Entire conversation — essential for detecting multi-turn coercion attacks |
-| `correlation_id` | One request / turn |
-| `event_id` | One specific event |
-
----
-
-## Risk Score Formula
-
-All inputs get translated into numbers and combined:
-
-```
-risk_score = 0.35 × (1 − grounding_score)
-           + 0.30 × tool_risk_value
-           + 0.25 × leakage_signal
-           + 0.10 × injection_signal
-```
-
-### Severity Thresholds
-
-| Score | Severity | Action |
+| Suite | Location | What it covers |
 |---|---|---|
-| 0.00 – 0.29 | Low | Log only |
-| 0.30 – 0.59 | Moderate | Emit warning |
-| 0.60 – 0.79 | High | Require human approval |
-| 0.80 – 1.00 | Critical | Block + incident report |
+| DLP unit tests | `dlp/tests/` | Canary, config, scanner, messenger, patterns, validators, context, integration |
+| Layer B tests | `tests/` | Capability matching, contract candidates, validator hardening, feedback loop |
+| Layer D tests | `layerd/tests/` | Risk scoring, telemetry event emission |
+| Adapter tests | `ascp_integration/tests/` | gRPC adapter, orchestrator integration |
 
 ---
 
-## The Five Invariants
+## Installation
 
-Security guarantees the system must never violate.
+**Requires Python 3.11+**
 
-| Code | Guarantee |
-|---|---|
-| I1 | No forbidden tool ever executes |
-| I2 | Allowed tools only run with safe arguments |
-| I3 | Secrets and canary tokens never appear in outputs |
-| I4 | Untrusted content cannot change policy |
-| I5 | Every decision has a reason code and a trace |
+### Core SDK
 
-Layer D directly enforces **I5**. If a decision exists without a trace, I5 is violated.
+```bash
+pip install .
+# or with uv
+uv sync
+```
 
----
+### Optional extras
 
-## Core Data Structures
+Install only what your integration needs:
 
-### TelemetryEvent
-
-One event per significant operation.
-
-Key fields: `event_id`, `correlation_id`, `session_id`, `event_type`, `severity`, `reason_code`, `invariant_violated`, `risk_score`.
-
-### IncidentReport
-
-Auto-generated when `risk_score ≥ 0.80`.
-
-Key fields: `trigger`, `blocked_action`, `redacted_fields` (labels only — never actual values), `invariant_at_risk`, `risk_score`, `summary`.
+```bash
+pip install "ascp[ascp-grpc]"       # gRPC sidecar adapter
+pip install "ascp[ascp-langchain]"  # LangChain / LangGraph adapter
+pip install "ascp[ascp-langgraph]"  # LangGraph adapter
+pip install "ascp[ascp-crewai]"     # CrewAI adapter
+pip install "ascp[ascp-llamaindex]" # LlamaIndex adapter
+pip install "ascp[ascp-smolagents]" # smolagents adapter
+pip install "ascp[nlp]"             # spaCy NER support
+pip install "ascp[ascp-ml]"         # ML-backed DLP (requires PyTorch)
+pip install "ascp[dev]"             # Development tools (pytest, ruff, mypy)
+```
 
 ---
 
-## Storage
+## Project Structure
 
-Two simultaneous sinks, both append-only. Write failures never crash the server.
-
-- **JSONL** — one JSON line per event, plain text file
-- **SQLite** — relational, queryable (e.g. `SELECT * FROM events WHERE invariant_violated = 'I3'`)
+```
+ASCP/
+├── ascp_integration/          # Orchestrator + framework adapters
+│   ├── orchestrator.py        # Central coordinator for all four layers
+│   ├── adapters/
+│   │   ├── langgraph_adapter.py
+│   │   ├── langchain_adapter.py
+│   │   ├── crew_adapter.py
+│   │   ├── llamaindex_adapter.py
+│   │   ├── smolagents_adapter.py
+│   │   ├── grpc_adapter.py
+│   │   └── proto/             # gRPC contract definitions
+│   └── tests/
+├── grounding/                 # Layer A — trust & grounding
+│   ├── claim_extractor.py
+│   ├── llm_claim_extractor.py
+│   ├── support_checker.py
+│   ├── sufficiency.py
+│   └── trust_vector.py
+├── layerb/                    # Layer B — capability contracts
+│   ├── engine.py              # Public SDK API + CLI entry point
+│   ├── validator.py           # Core policy enforcement engine
+│   ├── policy/                # Bundled default permissions
+│   ├── schemas/               # Bundled JSON schemas
+│   └── policies/              # Candidate generation & feedback
+├── dlp/                       # Layer C — data leakage prevention
+│   ├── __init__.py            # Public API: init(), scan_output(), etc.
+│   ├── scanner.py             # Detection pipeline orchestrator
+│   ├── enforcer.py            # Policy enforcement + decision logic
+│   ├── canary.py              # Canary injection & detection
+│   ├── patterns.py            # Regex pattern matching & redaction
+│   ├── config.py              # Policy loading & validation
+│   ├── models.py              # Core data structures & enums
+│   ├── ml.py                  # ML-backed DLP integration
+│   ├── policy.default.yaml    # Documented policy template
+│   ├── ML/                    # Training artifacts & notebooks
+│   └── tests/
+├── layerd/                    # Layer D — risk scoring & telemetry
+│   ├── risk/                  # Risk scorer, config, models
+│   ├── telemetry/             # Event emission (JSONL + SQLite)
+│   └── tests/
+├── common/
+│   └── config.py              # Shared settings (pydantic-settings)
+├── examples/
+│   ├── in_process_example.py  # In-process integration example
+│   ├── sidecar_client.py      # gRPC sidecar client example
+│   ├── sidecar_server.py      # gRPC sidecar server example
+│   └── custom_contract.yaml   # Example custom policy contract
+├── tests/                     # Layer B integration tests
+├── pyproject.toml
+└── uv.lock
+```
 
 ---
 
-## What Layer D Is Not
+## Repository
 
-It does not detect injections, validate arguments, scan for PII, or replace a production SIEM. It observes, measures, and reports — nothing more.
+[https://github.com/MohamedLouayChatti/ASCP](https://github.com/MohamedLouayChatti/ASCP)

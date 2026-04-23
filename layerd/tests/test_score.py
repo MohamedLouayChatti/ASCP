@@ -81,6 +81,54 @@ class TestInputValidation:
         assert 0.0 <= result.score <= 1.0
  
  
+class TestScoringConfigLoading:
+    def test_from_dict_customizes_parameters(self):
+        cfg = ScoringConfig.from_dict({
+            "layer_a": {"grounding": 0.18, "hallucination": 0.30},
+            "layer_c": {"dlp_block_floor": 0.92},
+            "combination": {"layer_a": 0.20, "layer_b": 0.30, "layer_c": 0.50},
+            "severity": {"critical": 0.90, "high": 0.70, "medium": 0.35},
+        })
+
+        assert cfg.layer_a.grounding == 0.18
+        assert cfg.layer_a.hallucination == 0.30
+        assert cfg.layer_c.dlp_block_floor == 0.92
+        assert cfg.combination.layer_c == 0.50
+        assert cfg.severity.high == 0.70
+
+    def test_from_yaml_loads_custom_parameters(self, tmp_path):
+        path = tmp_path / "layerd_risk.yaml"
+        path.write_text(
+            """
+            layer_a:
+              grounding: 0.18
+            layer_c:
+              dlp_block_floor: 0.92
+            combination:
+              layer_a: 0.20
+              layer_b: 0.30
+              layer_c: 0.50
+            severity:
+              critical: 0.90
+              high: 0.70
+              medium: 0.35
+            """,
+            encoding="utf-8",
+        )
+
+        cfg = ScoringConfig.from_yaml(path)
+        assert cfg.layer_a.grounding == 0.18
+        assert cfg.layer_c.dlp_block_floor == 0.92
+        assert cfg.combination.layer_c == 0.50
+        assert cfg.severity.high == 0.70
+
+    def test_compute_risk_score_accepts_custom_config(self):
+        custom_cfg = ScoringConfig.from_dict({"layer_b": {"tool_risk_low": 0.05}})
+        base = compute_risk_score(RiskInput(tool_risk_level=RiskLevel.LOW))
+        custom = compute_risk_score(RiskInput(tool_risk_level=RiskLevel.LOW), config=custom_cfg)
+        assert custom.score <= base.score
+
+ 
 # ===========================================================================
 # SECTION 2 — Security Invariants (non-negotiable)
 # ===========================================================================

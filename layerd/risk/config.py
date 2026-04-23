@@ -9,7 +9,10 @@ can be overridden by passing a custom ScoringConfig instance.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +137,26 @@ class ScoringConfig:
             combination=_build(CombinationWeights, data.get("combination", {})),
             severity=_build(SeverityThresholds, data.get("severity", {})),
         )
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "ScoringConfig":
+        """Load scoring configuration from a YAML file."""
+        raw = Path(path).read_text(encoding="utf-8")
+        data = yaml.safe_load(raw)
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            raise ValueError("YAML config must contain a mapping at the root.")
+        return cls.from_dict(data)
+
+    @classmethod
+    def load(cls, source: "ScoringConfig | dict[str, Any] | str | Path") -> "ScoringConfig":
+        """Create a ScoringConfig from an existing object, dict, or YAML path."""
+        if isinstance(source, ScoringConfig):
+            return source
+        if isinstance(source, dict):
+            return cls.from_dict(source)
+        return cls.from_yaml(source)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to plain dict (for logging or export)."""
