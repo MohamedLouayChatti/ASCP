@@ -10,37 +10,93 @@ from dataclasses import dataclass
 import re
 from typing import Iterable, List, Literal, Sequence
 
-from grounding.claim_extractor import Claim, extract_claims
+from common.config import settings
+from grounding.claim_extractor import Claim
+from grounding.llm_claim_extractor import LocalLLMClaimExtractor
+from grounding.semantic_scorer import best_semantic_score
 
 SupportVerdict = Literal["supported", "contradicted", "insufficient"]
 
 
 _STOPWORDS = {
+    # Articles and prepositions
     "a",
     "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "by",
-    "for",
-    "from",
-    "in",
-    "is",
-    "it",
-    "of",
-    "on",
-    "or",
-    "that",
     "the",
+    "in",
+    "on",
+    "at",
     "to",
+    "for",
+    "of",
+    "by",
+    "from",
+    "with",
+    "into",
+    "through",
+    "about",
+    "between",
+    # Common verbs with no factual signal
+    "is",
+    "are",
     "was",
     "were",
-    "with",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "said",
+    "stated",
+    "noted",
+    "described",
+    "mentioned",
+    # Connectors
+    "and",
+    "or",
+    "but",
+    "that",
+    "which",
+    "who",
+    "whom",
+    "this",
+    "these",
+    "those",
+    "their",
+    "its",
+    "it",
+    "also",
+    "however",
+    "therefore",
+    "thus",
+    "according",
+    "as",
+    "so",
+    "yet",
+    "both",
+    "each",
+    "more",
+    "most",
 }
 
 _NEGATION_WORDS = {"not", "never", "no", "none", "without", "cannot", "can't"}
+
+_IRREGULAR_VERBS = {
+    "built": "build",
+    "found": "find",
+    "made": "make",
+    "wrote": "write",
+    "ran": "run",
+    "led": "lead",
+    "held": "hold",
+    "said": "say",
+    "located": "locate",
+    "founded": "found",
+}
 
 
 @dataclass(frozen=True)
@@ -74,15 +130,42 @@ class SupportChecker:
         self,
         supported_threshold: float = 0.55,
         weak_threshold: float = 0.30,
+        use_semantic: bool = True,
+        semantic_weight: float = 0.50,
+        token_weight: float = 0.50,
+        bge_model: str = settings.bge_model,
+        bge_timeout: float = settings.bge_timeout,
     ) -> None:
         self.supported_threshold = supported_threshold
         self.weak_threshold = weak_threshold
+        self.use_semantic = use_semantic
+        self.semantic_weight = semantic_weight
+        self.token_weight = token_weight
+        self.bge_model = bge_model
+        self.bge_timeout = bge_timeout
 
     def check_pair(self, claim_text: str, document_text: str, claim_id: str, doc_id: str) -> SupportResult:
         """Evaluate one claim against one retrieved document."""
         claim_tokens = _content_tokens(claim_text)
         doc_tokens = _content_tokens(document_text)
+        return self._check_with_tokens(
+            claim_text=claim_text,
+            document_text=document_text,
+            claim_id=claim_id,
+            doc_id=doc_id,
+            claim_tokens=claim_tokens,
+            doc_tokens=doc_tokens,
+        )
 
+    def _check_with_tokens(
+        self,
+        claim_text: str,
+        document_text: str,
+        claim_id: str,
+        doc_id: str,
+        claim_tokens: List[str],
+        doc_tokens: List[str],
+    ) -> SupportResult:
         if not claim_tokens or not doc_tokens:
             return SupportResult(
                 claim_id=claim_id,
@@ -93,29 +176,44 @@ class SupportChecker:
                 reason="empty_claim_or_document",
             )
 
-        overlap_score = _overlap_ratio(claim_tokens, doc_tokens)
-        number_signal = _number_signal(claim_text, document_text)
         contradiction_signal = _contradiction_signal(claim_text, document_text)
-
-        adjusted_score = overlap_score
-        if number_signal == "match":
-            adjusted_score += 0.15
-        elif number_signal == "mismatch":
-            adjusted_score -= 0.20
-
-        adjusted_score = max(0.0, min(1.0, adjusted_score))
-
-        if contradiction_signal or number_signal == "mismatch":
-            confidence = min(0.98, 0.65 + (1.0 - adjusted_score) * 0.35)
-            reason = "contradiction_detected" if contradiction_signal else "numeric_mismatch"
+        if contradiction_signal:
+            token_score = _best_sentence_overlap(claim_tokens, document_text)
             return SupportResult(
                 claim_id=claim_id,
                 doc_id=doc_id,
                 verdict="contradicted",
-                confidence=round(confidence, 3),
-                overlap_score=round(adjusted_score, 3),
-                reason=reason,
+                confidence=0.85,
+                overlap_score=round(token_score, 3),
+                reason="contradiction_detected",
             )
+
+        token_score = _best_sentence_overlap(claim_tokens, document_text)
+
+        semantic_score = 0.0
+        if self.use_semantic:
+            doc_sentences = re.split(r"(?<=[.!?])\s+", document_text)
+            semantic_score, _best_span = best_semantic_score(
+                claim_text,
+                doc_sentences,
+                model=self.bge_model,
+                timeout=self.bge_timeout,
+            )
+
+        if self.use_semantic and semantic_score > 0:
+            combined_score = (self.token_weight * token_score) + (self.semantic_weight * semantic_score)
+        else:
+            combined_score = token_score
+
+        number_signal = _number_signal(claim_text, document_text)
+
+        adjusted_score = combined_score
+        if number_signal == "match":
+            adjusted_score += 0.10
+        elif number_signal == "mismatch":
+            adjusted_score -= 0.10
+
+        adjusted_score = max(0.0, min(1.0, adjusted_score))
 
         if adjusted_score >= self.supported_threshold:
             confidence = min(0.99, 0.55 + adjusted_score * 0.45)
@@ -125,7 +223,7 @@ class SupportChecker:
                 verdict="supported",
                 confidence=round(confidence, 3),
                 overlap_score=round(adjusted_score, 3),
-                reason="strong_overlap",
+                reason="semantic_and_token_overlap" if self.use_semantic else "strong_overlap",
             )
 
         if adjusted_score >= self.weak_threshold:
@@ -165,9 +263,22 @@ class SupportChecker:
         documents: Sequence[RetrievedDocument],
     ) -> List[SupportResult]:
         """Evaluate all claim-document combinations."""
+        doc_token_cache = {doc.doc_id: _content_tokens(doc.text) for doc in documents}
         results: List[SupportResult] = []
         for claim in claims:
-            results.extend(self.check_claim_against_documents(claim, documents))
+            claim_tokens = _content_tokens(claim.text)
+            for doc in documents:
+                doc_tokens = doc_token_cache[doc.doc_id]
+                results.append(
+                    self._check_with_tokens(
+                        claim_text=claim.text,
+                        document_text=doc.text,
+                        claim_id=claim.claim_id,
+                        doc_id=doc.doc_id,
+                        claim_tokens=claim_tokens,
+                        doc_tokens=doc_tokens,
+                    )
+                )
         return results
 
 
@@ -189,9 +300,20 @@ def compute_grounding_score(answer: str, documents: Sequence[str] | Sequence[Ret
     Returns:
         A dictionary with aggregate grounding metrics and per-claim details.
     """
-    claims = extract_claims(answer)
+    extractor = LocalLLMClaimExtractor(
+        model=settings.ollama_model,
+        ollama_url=settings.ollama_url,
+        timeout_seconds=settings.ollama_timeout,
+    )
+    claims = extractor.extract(answer).claims
     normalized_documents = _normalize_documents(documents)
-    checker = SupportChecker()
+    checker = SupportChecker(
+        use_semantic=settings.use_semantic_checker,
+        semantic_weight=settings.semantic_weight,
+        token_weight=settings.token_weight,
+        bge_model=settings.bge_model,
+        bge_timeout=settings.bge_timeout,
+    )
 
     details: List[dict] = []
     supported_count = 0
@@ -247,7 +369,25 @@ def compute_grounding_score(answer: str, documents: Sequence[str] | Sequence[Ret
 
 def _content_tokens(text: str) -> List[str]:
     tokens = [token.lower() for token in re.findall(r"\b[\w'-]+\b", text)]
-    return [token for token in tokens if token not in _STOPWORDS and len(token) > 1]
+    filtered = [token for token in tokens if token not in _STOPWORDS and len(token) > 1]
+    return [_normalize_token(token) for token in filtered]
+
+
+def _simple_stem(token: str) -> str:
+    """Strip common English suffixes for better token matching."""
+    if len(token) < 4:
+        return token
+    for suffix in ("tion", "ing", "ed", "es", "ly", "er", "al"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+            return token[: -len(suffix)]
+    return token
+
+
+def _normalize_token(token: str) -> str:
+    """Normalize token: check irregular verbs first, then stem."""
+    if token in _IRREGULAR_VERBS:
+        return _IRREGULAR_VERBS[token]
+    return _simple_stem(token)
 
 
 def _normalize_documents(documents: Sequence[str] | Sequence[RetrievedDocument]) -> List[RetrievedDocument]:
@@ -288,7 +428,26 @@ def _overlap_ratio(claim_tokens: Iterable[str], doc_tokens: Iterable[str]) -> fl
     if not claim_set:
         return 0.0
     overlap = claim_set.intersection(doc_set)
-    return len(overlap) / len(claim_set)
+    union = claim_set.union(doc_set)
+    return len(overlap) / len(union)
+
+
+def _best_sentence_overlap(claim_tokens: List[str], doc_text: str) -> float:
+    """Score claim against each sentence individually, return best score."""
+    sentences = re.split(r"(?<=[.!?])\s+", doc_text)
+    best = 0.0
+    claim_set = set(claim_tokens)
+    if not claim_set:
+        return 0.0
+
+    for sent in sentences:
+        sent_tokens = set(_content_tokens(sent))
+        if not sent_tokens:
+            continue
+        score = _overlap_ratio(claim_set, sent_tokens)
+        if score > best:
+            best = score
+    return best
 
 
 def _extract_numbers(text: str) -> List[str]:
@@ -316,7 +475,29 @@ def _has_negation(text: str) -> bool:
 
 
 def _contradiction_signal(claim_text: str, document_text: str) -> bool:
-    # Negation mismatch is a high-precision contradiction hint.
+    """
+    Only flag contradiction if the most-overlapping sentence
+    has opposite negation polarity.
+    """
+    sentences = re.split(r"(?<=[.!?])\s+", document_text)
+    claim_tokens = _content_tokens(claim_text)
+    claim_set = set(claim_tokens)
     claim_neg = _has_negation(claim_text)
-    doc_neg = _has_negation(document_text)
-    return claim_neg != doc_neg and _overlap_ratio(_content_tokens(claim_text), _content_tokens(document_text)) >= 0.5
+
+    best_sent = ""
+    best_score = 0.0
+    for sent in sentences:
+        sent_tokens = set(_content_tokens(sent))
+        if not sent_tokens or not claim_set:
+            continue
+        overlap = claim_set & sent_tokens
+        score = len(overlap) / len(claim_set)
+        if score > best_score:
+            best_score = score
+            best_sent = sent
+
+    if best_score < 0.35 or not best_sent:
+        return False
+
+    sent_neg = _has_negation(best_sent)
+    return claim_neg != sent_neg

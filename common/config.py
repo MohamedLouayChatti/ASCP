@@ -11,6 +11,13 @@ class Settings(BaseSettings):
     ollama_model: str = "llama3.2"
     ollama_timeout: float = 30.0
 
+    # Semantic checker settings
+    use_semantic_checker: bool = True
+    semantic_weight: float = 0.50
+    token_weight: float = 0.50
+    bge_model: str = "hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:latest"
+    bge_timeout: float = 10.0
+
     class Config:
         env_file = ".env"
 
