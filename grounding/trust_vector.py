@@ -9,7 +9,8 @@ Output is a single payload for policy enforcement (E4).
 
 from __future__ import annotations
 
-from typing import Sequence
+from dataclasses import asdict, is_dataclass
+from typing import Any, Sequence
 
 from grounding.support_checker import RetrievedDocument, compute_grounding_score
 from grounding.sufficiency import check_sufficiency
@@ -33,6 +34,7 @@ def assemble_trust_vector(
     grounding = compute_grounding_score(answer=answer, documents=documents)
     document_texts = _extract_document_texts(documents)
     sufficiency = check_sufficiency(query=query, documents=document_texts)
+    sufficiency_payload = _sufficiency_to_dict(sufficiency)
 
     contradiction_ratio = _safe_ratio(
         grounding.get("contradicted_claims", 0),
@@ -42,7 +44,7 @@ def assemble_trust_vector(
     hallucination_risk = _compute_hallucination_risk(
         grounding_score=grounding.get("grounding_score", 0.0),
         contradiction_ratio=contradiction_ratio,
-        retrieval_relevance=sufficiency.get("retrieval_relevance", 0.0),
+        retrieval_relevance=sufficiency_payload.get("retrieval_relevance", 0.0),
     )
 
     return {
@@ -51,8 +53,8 @@ def assemble_trust_vector(
         "answer": answer,
         "signals": {
             "grounding_score": grounding.get("grounding_score", 0.0),
-            "retrieval_relevance": sufficiency.get("retrieval_relevance", 0.0),
-            "context_sufficiency": sufficiency.get("context_sufficiency", "insufficient"),
+            "retrieval_relevance": sufficiency_payload.get("retrieval_relevance", 0.0),
+            "context_sufficiency": sufficiency_payload.get("context_sufficiency", "insufficient"),
             "contradiction_ratio": round(contradiction_ratio, 3),
             "hallucination_risk": hallucination_risk,
         },
@@ -62,26 +64,36 @@ def assemble_trust_vector(
             "contradicted_claims": grounding.get("contradicted_claims", 0),
             "insufficient_claims": grounding.get("insufficient_claims", 0),
             "total_claims": grounding.get("total_claims", 0),
-            "covered_keywords": sufficiency.get("covered_keywords", 0),
-            "total_keywords": sufficiency.get("total_keywords", 0),
+            "covered_keywords": sufficiency_payload.get("covered_keywords", 0),
+            "total_keywords": sufficiency_payload.get("total_keywords", 0),
         },
         "decision_hint": _decision_hint(
             grounding_score=grounding.get("grounding_score", 0.0),
-            context_sufficiency=sufficiency.get("context_sufficiency", "insufficient"),
+            context_sufficiency=sufficiency_payload.get("context_sufficiency", "insufficient"),
             hallucination_risk=hallucination_risk,
         ),
         "reason_codes": _reason_codes(
             grounding_score=grounding.get("grounding_score", 0.0),
-            context_sufficiency=sufficiency.get("context_sufficiency", "insufficient"),
+            context_sufficiency=sufficiency_payload.get("context_sufficiency", "insufficient"),
             contradicted_claims=grounding.get("contradicted_claims", 0),
             total_claims=grounding.get("total_claims", 0),
             hallucination_risk=hallucination_risk,
         ),
         "details": {
             "grounding": grounding,
-            "sufficiency": sufficiency,
+            "sufficiency": sufficiency_payload,
         },
     }
+
+
+def _sufficiency_to_dict(sufficiency: Any) -> dict:
+    if isinstance(sufficiency, dict):
+        return sufficiency
+    if is_dataclass(sufficiency):
+        return asdict(sufficiency)
+    if hasattr(sufficiency, "__dict__"):
+        return dict(sufficiency.__dict__)
+    return {}
 
 
 def _extract_document_texts(documents: Sequence[str] | Sequence[RetrievedDocument]) -> list[str]:
