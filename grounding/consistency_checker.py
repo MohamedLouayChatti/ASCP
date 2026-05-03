@@ -118,14 +118,14 @@ def _has_negation(text: str) -> bool:
 
 def _topic_overlap(text_a: str, text_b: str) -> float:
     """
-    Claim-recall overlap: fraction of text_a tokens found in text_b.
-    Answers: how much of text_a's topic is covered by text_b?
+    Symmetric topical overlap (Jaccard) for gating comparisons.
     """
     tokens_a = _content_tokens(text_a)
     tokens_b = _content_tokens(text_b)
-    if not tokens_a:
+    if not tokens_a or not tokens_b:
         return 0.0
-    return len(tokens_a & tokens_b) / len(tokens_a)
+    union = tokens_a | tokens_b
+    return len(tokens_a & tokens_b) / len(union)
 
 
 def _best_matching_sentence(
@@ -152,6 +152,7 @@ def _best_matching_sentence(
 def _detect_antonym_conflict(
     text_a: str,
     text_b: str,
+    min_topic_overlap: float = 0.20,
 ) -> tuple[bool, str]:
     """
     Check for opposing antonym pairs between two texts.
@@ -159,6 +160,8 @@ def _detect_antonym_conflict(
     'allowed vs forbidden', 'authorized vs unauthorized' etc.
     without requiring any negation word to be present.
     """
+    if _topic_overlap(text_a, text_b) < min_topic_overlap:
+        return False, ""
     lower_a, lower_b = text_a.lower(), text_b.lower()
     for word_a, word_b in _ANTONYM_PAIRS:
         a_has_a = bool(re.search(rf"\b{word_a}\b", lower_a))
@@ -209,7 +212,8 @@ def _detect_semantic_contradiction(
     text_a: str,
     text_b: str,
     min_topic_overlap: float = 0.30,
-    max_semantic_similarity: float = 0.25,
+    min_semantic_similarity: float = 0.20,
+    max_semantic_similarity: float = 0.50,
 ) -> tuple[bool, float]:
     """
     BGE-based semantic contradiction detection.
@@ -227,7 +231,8 @@ def _detect_semantic_contradiction(
     if vec_a is None or vec_b is None:
         return False, 0.0
     similarity = cosine_similarity(vec_a, vec_b)
-    return (similarity < max_semantic_similarity), similarity
+    in_contradiction_zone = min_semantic_similarity < similarity < max_semantic_similarity
+    return in_contradiction_zone, similarity
 
 
 # ── Part 1 — Self-contradiction ───────────────────────────────────────────────
@@ -429,6 +434,8 @@ class ConsistencyChecker:
         for i, claim_a in enumerate(claims_list):
             for claim_b in claims_list[i + 1:]:
                 checked_claim_pairs += 1
+                if _topic_overlap(claim_a.text, claim_b.text) < 0.15:
+                    continue
                 result = _check_self_contradiction(
                     claim_a, claim_b, self.use_semantic
                 )
@@ -453,8 +460,11 @@ class ConsistencyChecker:
             1 for p in pairs if p.contradiction_type == "doc_contradiction"
         )
 
+        doc_rate = doc_count / max(checked_doc_pairs, 1)
+        self_rate = self_count / max(checked_claim_pairs, 1)
+
         # Doc contradictions weighted higher — core ASCP security mission
-        risk = min(1.0, (self_count * 0.20) + (doc_count * 0.35))
+        risk = min(1.0, (self_rate * 0.30) + (doc_rate * 0.70))
 
         # Any high-confidence hit floors risk at 0.50
         if any(p.confidence >= 0.85 for p in pairs):
