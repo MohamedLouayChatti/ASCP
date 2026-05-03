@@ -1,4 +1,4 @@
-# scripts/debug_antonym.py
+# debugging/debug_antonym.py
 
 import sys
 from pathlib import Path

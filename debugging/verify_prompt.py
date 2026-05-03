@@ -1,4 +1,4 @@
-# scripts/verify_prompt.py
+# debugging/verify_prompt.py
 
 import sys
 sys.path.insert(0, ".")

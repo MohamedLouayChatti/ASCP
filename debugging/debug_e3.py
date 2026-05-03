@@ -1,4 +1,4 @@
-# scripts/debug_e3.py
+# debugging/debug_e3.py
 
 import sys
 sys.path.insert(0, ".")

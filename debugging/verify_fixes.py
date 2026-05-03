@@ -1,4 +1,4 @@
-# scripts/verify_fixes.py
+#debugging/verify_fixes.py
 
 import sys
 from pathlib import Path
