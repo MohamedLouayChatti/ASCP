@@ -14,89 +14,11 @@ from common.config import settings
 
 from grounding.llm_claim_extractor import Claim, LocalLLMClaimExtractor
 from grounding.semantic_scorer import best_semantic_score
+from grounding.text_utils import _STOPWORDS, content_tokens, has_negation
 
 SupportVerdict = Literal["supported", "contradicted", "insufficient"]
 
 
-_STOPWORDS = {
-    # Articles and prepositions
-    "a",
-    "an",
-    "the",
-    "in",
-    "on",
-    "at",
-    "to",
-    "for",
-    "of",
-    "by",
-    "from",
-    "with",
-    "into",
-    "through",
-    "about",
-    "between",
-    # Common verbs with no factual signal
-    "is",
-    "are",
-    "was",
-    "were",
-    "be",
-    "been",
-    "being",
-    "have",
-    "has",
-    "had",
-    "do",
-    "does",
-    "did",
-    "said",
-    "stated",
-    "noted",
-    "described",
-    "mentioned",
-    # Connectors
-    "and",
-    "or",
-    "but",
-    "that",
-    "which",
-    "who",
-    "whom",
-    "this",
-    "these",
-    "those",
-    "their",
-    "its",
-    "it",
-    "also",
-    "however",
-    "therefore",
-    "thus",
-    "according",
-    "as",
-    "so",
-    "yet",
-    "both",
-    "each",
-    "more",
-    "most",
-}
-
-_NEGATION_WORDS = {"not", "never", "no", "none", "without", "cannot", "can't"}
-
-_IRREGULAR_VERBS = {
-    "built": "build",
-    "found": "find",
-    "made": "make",
-    "wrote": "write",
-    "ran": "run",
-    "led": "lead",
-    "held": "hold",
-    "said": "say",
-    "located": "locate",
-    "founded": "found",
-}
 
 
 @dataclass(frozen=True)
@@ -146,8 +68,8 @@ class SupportChecker:
 
     def check_pair(self, claim_text: str, document_text: str, claim_id: str, doc_id: str) -> SupportResult:
         """Evaluate one claim against one retrieved document."""
-        claim_tokens = _content_tokens(claim_text)
-        doc_tokens = _content_tokens(document_text)
+        claim_tokens = list(content_tokens(claim_text))
+        doc_tokens = list(content_tokens(document_text))
         return self._check_with_tokens(
             claim_text=claim_text,
             document_text=document_text,
@@ -266,7 +188,7 @@ class SupportChecker:
         doc_token_cache = {doc.doc_id: _content_tokens(doc.text) for doc in documents}
         results: List[SupportResult] = []
         for claim in claims:
-            claim_tokens = _content_tokens(claim.text)
+            claim_tokens = list(content_tokens(claim.text))
             for doc in documents:
                 doc_tokens = doc_token_cache[doc.doc_id]
                 results.append(
@@ -367,29 +289,6 @@ def compute_grounding_score(answer: str, documents: Sequence[str] | Sequence[Ret
     }
 
 
-def _content_tokens(text: str) -> List[str]:
-    tokens = [token.lower() for token in re.findall(r"\b[\w'-]+\b", text)]
-    filtered = [token for token in tokens if token not in _STOPWORDS and len(token) > 1]
-    return [_normalize_token(token) for token in filtered]
-
-
-def _simple_stem(token: str) -> str:
-    """Strip common English suffixes for better token matching."""
-    if len(token) < 4:
-        return token
-    for suffix in ("tion", "ing", "ed", "es", "ly", "er", "al"):
-        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
-            return token[: -len(suffix)]
-    return token
-
-
-def _normalize_token(token: str) -> str:
-    """Normalize token: check irregular verbs first, then stem."""
-    if token in _IRREGULAR_VERBS:
-        return _IRREGULAR_VERBS[token]
-    return _simple_stem(token)
-
-
 def _normalize_documents(documents: Sequence[str] | Sequence[RetrievedDocument]) -> List[RetrievedDocument]:
     if not documents:
         return []
@@ -441,7 +340,7 @@ def _best_sentence_overlap(claim_tokens: List[str], doc_text: str) -> float:
         return 0.0
 
     for sent in sentences:
-        sent_tokens = set(_content_tokens(sent))
+        sent_tokens = content_tokens(sent)
         if not sent_tokens:
             continue
         score = _overlap_ratio(claim_set, sent_tokens)
@@ -469,25 +368,19 @@ def _number_signal(claim_text: str, document_text: str) -> Literal["none", "matc
     return "mismatch"
 
 
-def _has_negation(text: str) -> bool:
-    lowered = text.lower()
-    return any(word in lowered.split() for word in _NEGATION_WORDS)
-
-
 def _contradiction_signal(claim_text: str, document_text: str) -> bool:
     """
     Only flag contradiction if the most-overlapping sentence
     has opposite negation polarity.
     """
     sentences = re.split(r"(?<=[.!?])\s+", document_text)
-    claim_tokens = _content_tokens(claim_text)
-    claim_set = set(claim_tokens)
-    claim_neg = _has_negation(claim_text)
+    claim_set = content_tokens(claim_text)
+    claim_neg = has_negation(claim_text)
 
     best_sent = ""
     best_score = 0.0
     for sent in sentences:
-        sent_tokens = set(_content_tokens(sent))
+        sent_tokens = content_tokens(sent)
         if not sent_tokens or not claim_set:
             continue
         overlap = claim_set & sent_tokens
@@ -499,5 +392,5 @@ def _contradiction_signal(claim_text: str, document_text: str) -> bool:
     if best_score < 0.35 or not best_sent:
         return False
 
-    sent_neg = _has_negation(best_sent)
+    sent_neg = has_negation(best_sent)
     return claim_neg != sent_neg

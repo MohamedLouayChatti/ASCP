@@ -18,6 +18,7 @@ from typing import List, Literal, Optional, Sequence
 
 from grounding.llm_claim_extractor import Claim, LocalLLMClaimExtractor
 from grounding.semantic_scorer import get_embedding, cosine_similarity
+from grounding.text_utils import content_tokens, has_negation, topic_overlap
 from common.config import settings
 
 # ── Types ─────────────────────────────────────────────────────────────────────
@@ -26,25 +27,6 @@ ContradictionType = Literal["self_contradiction", "doc_contradiction"]
 
 # ── Vocabulary ────────────────────────────────────────────────────────────────
 
-_NEGATION_WORDS = {
-    "not", "never", "no", "none", "without", "cannot",
-    "can't", "isn't", "aren't", "wasn't", "weren't",
-    "doesn't", "don't", "didn't", "won't", "wouldn't",
-    "shouldn't", "couldn't", "forbidden", "prohibited",
-    "denied", "blocked", "disallowed", "unauthorized",
-}
-
-_STOPWORDS = {
-    "a", "an", "the", "in", "on", "at", "to", "for", "of", "by",
-    "from", "with", "into", "through", "about", "between",
-    "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did",
-    "said", "stated", "noted", "described", "mentioned",
-    "and", "or", "but", "that", "which", "who", "whom",
-    "this", "these", "those", "their", "its", "it",
-    "also", "however", "therefore", "thus", "according",
-    "as", "so", "yet", "both", "each", "more", "most",
-}
 
 _ANTONYM_PAIRS = [
     ("allowed",    "forbidden"),
@@ -71,6 +53,52 @@ _ANTONYM_PAIRS = [
     ("grant",      "deny"),
     ("grant",      "revoke"),
 ]
+
+_ANTONYM_STEMS: dict[str, str] = {
+    "allowed": "allow",
+    "forbidden": "forbi",
+    "prohibited": "prohib",
+    "prohibits": "prohib",
+    "denied": "deni",
+    "blocked": "block",
+    "disallowed": "disall",
+    "enabled": "enabl",
+    "disabled": "disabl",
+    "active": "activ",
+    "inactive": "inactiv",
+    "authorized": "author",
+    "unauthorized": "unauth",
+    "secure": "secur",
+    "insecure": "insecur",
+    "encrypted": "encrypt",
+    "unencrypted": "unencrypt",
+    "required": "requir",
+    "optional": "option",
+    "mandatory": "mandator",
+    "public": "public",
+    "private": "privat",
+    "internal": "intern",
+    "external": "extern",
+    "permitted": "permi",
+    "true": "true",
+    "false": "fals",
+    "valid": "valid",
+    "invalid": "invalid",
+    "success": "success",
+    "failure": "failur",
+    "increase": "increas",
+    "decrease": "decreas",
+    "pass": "pass",
+    "fail": "fail",
+    "grant": "grant",
+    "deny": "deni",
+    "revoke": "revok",
+}
+
+
+def _get_stem(word: str) -> str:
+    """Get the regex stem for a word. Falls back to first 5 chars."""
+    return _ANTONYM_STEMS.get(word, word[:5])
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
 
@@ -105,27 +133,6 @@ class ConsistencyResult:
     extraction_latency_ms: float = 0.0
 
 
-# ── Token helpers ─────────────────────────────────────────────────────────────
-
-def _content_tokens(text: str) -> set[str]:
-    tokens = [t.lower() for t in re.findall(r"\b\w+\b", text)]
-    return {t for t in tokens if t not in _STOPWORDS and len(t) > 2}
-
-
-def _has_negation(text: str) -> bool:
-    return bool(set(text.lower().split()) & _NEGATION_WORDS)
-
-
-def _topic_overlap(text_a: str, text_b: str) -> float:
-    """
-    Symmetric topical overlap (Jaccard) for gating comparisons.
-    """
-    tokens_a = _content_tokens(text_a)
-    tokens_b = _content_tokens(text_b)
-    if not tokens_a or not tokens_b:
-        return 0.0
-    union = tokens_a | tokens_b
-    return len(tokens_a & tokens_b) / len(union)
 
 
 def _best_matching_sentence(
@@ -140,7 +147,7 @@ def _best_matching_sentence(
     sentences = re.split(r"(?<=[.!?])\s+", doc_text)
     best_sent, best_score = "", 0.0
     for sent in sentences:
-        score = _topic_overlap(claim_text, sent)
+        score = topic_overlap(claim_text, sent)
         if score > best_score:
             best_score = score
             best_sent = sent
@@ -160,14 +167,16 @@ def _detect_antonym_conflict(
     'allowed vs forbidden', 'authorized vs unauthorized' etc.
     without requiring any negation word to be present.
     """
-    if _topic_overlap(text_a, text_b) < min_topic_overlap:
+    if topic_overlap(text_a, text_b) < min_topic_overlap:
         return False, ""
     lower_a, lower_b = text_a.lower(), text_b.lower()
     for word_a, word_b in _ANTONYM_PAIRS:
-        a_has_a = bool(re.search(rf"\b{word_a}\b", lower_a))
-        b_has_b = bool(re.search(rf"\b{word_b}\b", lower_b))
-        a_has_b = bool(re.search(rf"\b{word_b}\b", lower_a))
-        b_has_a = bool(re.search(rf"\b{word_a}\b", lower_b))
+        stem_a = _get_stem(word_a)
+        stem_b = _get_stem(word_b)
+        a_has_a = bool(re.search(rf"\b{re.escape(stem_a)}\w*\b", lower_a))
+        b_has_b = bool(re.search(rf"\b{re.escape(stem_b)}\w*\b", lower_b))
+        a_has_b = bool(re.search(rf"\b{re.escape(stem_b)}\w*\b", lower_a))
+        b_has_a = bool(re.search(rf"\b{re.escape(stem_a)}\w*\b", lower_b))
         if (a_has_a and b_has_b) or (a_has_b and b_has_a):
             return True, f"'{word_a}' vs '{word_b}'"
     return False, ""
@@ -176,7 +185,7 @@ def _detect_antonym_conflict(
 def _detect_negation_conflict(
     text_a: str,
     text_b: str,
-    min_overlap: float = 0.35,
+    min_overlap: float = 0.25,
 ) -> bool:
     """
     Negation polarity mismatch on topically related texts.
@@ -184,9 +193,9 @@ def _detect_negation_conflict(
     because here we are building a telemetry record — fewer false
     positives preferred over higher recall.
     """
-    if _topic_overlap(text_a, text_b) < min_overlap:
+    if topic_overlap(text_a, text_b) < min_overlap:
         return False
-    return _has_negation(text_a) != _has_negation(text_b)
+    return has_negation(text_a) != has_negation(text_b)
 
 
 def _detect_numeric_conflict(
@@ -199,7 +208,7 @@ def _detect_numeric_conflict(
     Both texts contain numbers, no numbers are shared,
     and they discuss the same topic = contradicting numeric claims.
     """
-    if _topic_overlap(text_a, text_b) < min_overlap:
+    if topic_overlap(text_a, text_b) < min_overlap:
         return False, ""
     nums_a = set(re.findall(r"\b\d+(?:[.,]\d+)?\b", text_a))
     nums_b = set(re.findall(r"\b\d+(?:[.,]\d+)?\b", text_b))
@@ -224,7 +233,7 @@ def _detect_semantic_contradiction(
     Only runs after methods 1-3 all miss — avoids unnecessary
     embedding calls since llama3.2:1b is already under load.
     """
-    if _topic_overlap(text_a, text_b) < min_topic_overlap:
+    if topic_overlap(text_a, text_b) < min_topic_overlap:
         return False, 0.0
     vec_a = get_embedding(text_a)
     vec_b = get_embedding(text_b)
@@ -249,7 +258,7 @@ def _check_self_contradiction(
     than with regex-extracted claims.
     """
     # Gate: unrelated topics cannot contradict
-    if _topic_overlap(claim_a.text, claim_b.text) < 0.20:
+    if topic_overlap(claim_a.text, claim_b.text) < 0.15:
         return None
 
     # Method 1 — Antonym (fastest, most precise)
@@ -269,7 +278,7 @@ def _check_self_contradiction(
         )
 
     # Method 2 — Negation polarity
-    if _detect_negation_conflict(claim_a.text, claim_b.text, min_overlap=0.35):
+    if _detect_negation_conflict(claim_a.text, claim_b.text, min_overlap=0.25):
         return ContradictionPair(
             contradiction_type="self_contradiction",
             claim_a_id=claim_a.claim_id,
@@ -335,7 +344,7 @@ def _check_doc_contradiction(
     from unrelated content in long policy documents.
     """
     best_sent, best_overlap = _best_matching_sentence(claim.text, doc_text)
-    if best_overlap < 0.25 or not best_sent:
+    if best_overlap < 0.20 or not best_sent:
         return None
 
     # Method 1 — Antonym (highest confidence for policy text)
@@ -434,7 +443,7 @@ class ConsistencyChecker:
         for i, claim_a in enumerate(claims_list):
             for claim_b in claims_list[i + 1:]:
                 checked_claim_pairs += 1
-                if _topic_overlap(claim_a.text, claim_b.text) < 0.15:
+                if topic_overlap(claim_a.text, claim_b.text) < 0.10:
                     continue
                 result = _check_self_contradiction(
                     claim_a, claim_b, self.use_semantic
