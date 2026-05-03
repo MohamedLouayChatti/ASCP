@@ -48,6 +48,8 @@ def _load_prompts() -> tuple[str, str]:
 
 
 ClaimClass, ClaimExtractorClass = _load_claim_types()
+Claim = ClaimClass
+ClaimExtractor = ClaimExtractorClass
 CLAIM_EXTRACTION_SYSTEM, CLAIM_EXTRACTION_USER = _load_prompts()
 
 logger = logging.getLogger(__name__)

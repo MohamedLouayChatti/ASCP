@@ -11,8 +11,8 @@ import re
 from typing import Iterable, List, Literal, Sequence
 
 from common.config import settings
-from grounding.claim_extractor import Claim
-from grounding.llm_claim_extractor import LocalLLMClaimExtractor
+
+from grounding.llm_claim_extractor import Claim, LocalLLMClaimExtractor
 from grounding.semantic_scorer import best_semantic_score
 
 SupportVerdict = Literal["supported", "contradicted", "insufficient"]

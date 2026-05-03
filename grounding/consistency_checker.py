@@ -16,8 +16,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Literal, Optional, Sequence
 
-from grounding.llm_claim_extractor import LocalLLMClaimExtractor
-from grounding.claim_extractor import Claim
+from grounding.llm_claim_extractor import Claim, LocalLLMClaimExtractor
 from grounding.semantic_scorer import get_embedding, cosine_similarity
 from common.config import settings
 
