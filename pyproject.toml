@@ -75,14 +75,14 @@ allow-direct-references = true
 
 
 [tool.pytest.ini_options]
-testpaths = ["dlp/tests"]
+testpaths = ["tests", "ascp_integration/tests", "dlp/tests", "layerd/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short --cov=dlp --cov-report=html --cov-report=term-missing --cov-report=xml"
+addopts = "-v --tb=short --cov=ascp_integration --cov=dlp --cov=grounding --cov=layerb --cov=layerd --cov-report=html --cov-report=term-missing --cov-report=xml"
 markers = [
-    "integration: integration tests",
-    "unit: unit tests",
+"integration: integration tests",
+"unit: unit tests",
 ]
 
 [tool.coverage.run]

@@ -1,6 +1,6 @@
 # ascp/common/config.py
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # Extractor mode: "llm_local" | "llm_api" | "regex"
@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     bge_model: str = "hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:latest"
     bge_timeout: float = 10.0
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 
 settings = Settings()

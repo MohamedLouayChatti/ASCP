@@ -1,8 +1,8 @@
 import pytest
-import asyncio
 import grpc
 
 from google.protobuf import struct_pb2
+import pytest_asyncio
 
 from ascp_integration.orchestrator import ASCPOrchestrator
 from ascp_integration.adapters.grpc_adapter import OrchestratorServicer
@@ -26,7 +26,7 @@ def orchestrator():
     return ASCPOrchestrator(session_id="test_session_grpc", log_path="test_logs.jsonl")
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def running_server(orchestrator):
     """Start an ephemeral gRPC server and yield the port."""
     server = grpc.aio.server()
@@ -39,7 +39,7 @@ async def running_server(orchestrator):
     await server.stop(grace=0)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def stub(running_server):
     """Return a stub connected to the running server."""
     channel = grpc.aio.insecure_channel(f"localhost:{running_server}")
