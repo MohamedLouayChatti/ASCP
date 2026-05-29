@@ -103,3 +103,17 @@ dlp_demo_secrets.py
 *.tmp
 node_modules/
 node_modules/
+
+.env
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+*.log
+*.sqlite3
+*.db
+*.bak
+*.swp
+*.swo
+*.tmp       
+    

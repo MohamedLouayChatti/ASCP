@@ -2,29 +2,55 @@
 
 from __future__ import annotations
 
-import json
 import importlib
+import json
 import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Optional
+from typing import List, Optional
 
 import httpx
 
-if TYPE_CHECKING:
-    from grounding.claim_extractor import Claim as ClaimType
-else:
-    ClaimType = object
+class Claim:
+    """Atomic claim representation used by support and consistency checks."""
 
-def _load_claim_types() -> tuple[type, type]:
-    for module_name in ("grounding.claim_extractor", "ascp.grounding.claim_extractor"):
-        try:
-            module = importlib.import_module(module_name)
-            return module.Claim, module.ClaimExtractor
-        except ModuleNotFoundError:
-            continue
-    raise ModuleNotFoundError("Could not import claim extractor module from known paths.")
+    def __init__(self, claim_id: str, text: str, sentence_index: int, checkable: bool) -> None:
+        self.claim_id = claim_id
+        self.text = text
+        self.sentence_index = sentence_index
+        self.checkable = checkable
+
+
+class ClaimExtractor:
+    """Deterministic regex-based claim extractor (safe fallback)."""
+
+    def extract(self, answer: str) -> List[Claim]:
+        if not answer or not answer.strip():
+            return []
+
+        sentences = re.split(r"(?<=[.!?])\s+", answer.strip())
+        claims: List[Claim] = []
+        for i, sent in enumerate(sentences):
+            text = sent.strip()
+            if not text:
+                continue
+            checkable = bool(
+                re.search(
+                    r"\b(is|are|was|were|has|have|had|will|can|must|should)\b",
+                    text.lower(),
+                )
+            )
+            claims.append(
+                Claim(
+                    claim_id=f"c{i + 1}",
+                    text=text,
+                    sentence_index=i,
+                    checkable=checkable,
+                )
+            )
+
+        return claims
 
 
 def _load_prompts() -> tuple[str, str]:
@@ -47,7 +73,10 @@ def _load_prompts() -> tuple[str, str]:
     return fallback_system, fallback_user
 
 
-ClaimClass, ClaimExtractorClass = _load_claim_types()
+ClaimClass = Claim
+ClaimExtractorClass = ClaimExtractor
+Claim = ClaimClass
+ClaimExtractor = ClaimExtractorClass
 CLAIM_EXTRACTION_SYSTEM, CLAIM_EXTRACTION_USER = _load_prompts()
 
 logger = logging.getLogger(__name__)
