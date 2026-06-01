@@ -2,12 +2,16 @@
 #
 # This file lists the minimum dependencies required to run the DLP module.
 #
-# For optional ML Classification (Steps 3 & 4 of the pipeline), also install:
-torch 
-transformers 
-peft
-bitsandbytes
-accelerate
+# For ML Classification (Steps 3 & 4 of the pipeline), install a CUDA-enabled
+# PyTorch build that matches the target machine's driver/CUDA runtime.
+# Example for CUDA 12.1:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch>=2.4.0
+transformers>=4.46.0
+peft>=0.18.0
+bitsandbytes>=0.46.1
+accelerate>=0.29.0
+safetensors>=0.4.0
 #
 # For faster HuggingFace model downloads:
 hf-transfer

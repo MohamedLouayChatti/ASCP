@@ -47,12 +47,16 @@ class ASCPOrchestrator:
         *,
         layer_b_engine: LayerBEngine | None = None,
         dlp_config: Path | Any | None = None,
+        warmup_ml: bool = False,
     ) -> None:
         self.session_id = session_id
         self.log_path = log_path
 
         logger.info("Initializing Layer C (DLP)...")
         dlp.init(dlp_config if dlp_config is not None else _sdk_default_dlp_config())
+        if warmup_ml:
+            logger.info("Warming up Layer C ML classifier...")
+            dlp.warmup_ml()
 
         logger.info("Initializing Layer B (Engine)...")
         self.layer_b_engine = layer_b_engine or LayerBEngine()

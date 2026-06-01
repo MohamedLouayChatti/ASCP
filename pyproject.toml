@@ -31,11 +31,12 @@ ascp-llamaindex = ["llama-index>=0.11.0"]
 ascp-smolagents = ["smolagents>=1.0.0"]
 ascp-mcp = ["mcp>=1.26.0"]
 ascp-ml = [
-    "torch>=2.0.0",
-    "transformers>=4.40.0",
-    "peft>=0.11.0",
+    "torch>=2.4.0",
+    "transformers>=4.46.0",
+    "peft>=0.18.0",
     "bitsandbytes>=0.46.1",
     "accelerate>=0.29.0",
+    "safetensors>=0.4.0",
     "scipy>=1.11.0",
 ]
 dev = [
@@ -74,7 +75,8 @@ ignore_missing_imports = true
 packages = ["ascp_integration", "dlp", "grounding", "layerb", "layerd"]
 include = [
     "ascp_integration/adapters/proto/*.proto",
-    "dlp/policy/*.yaml",
+    "dlp/policy.default.yaml",
+    "dlp/ML/dlp_lora_package/*",
     "layerb/policy/*.yaml",
     "layerb/schemas/*.json",
 ]

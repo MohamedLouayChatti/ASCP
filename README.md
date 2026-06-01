@@ -286,12 +286,30 @@ dlp.init(Path("config/policy.yaml"))
 
 See `dlp/policy.default.yaml` for the full documented template.
 
-### Machine learning backend (optional)
+### Machine learning backend
 
-A fine-tuned LoRA adapter (Gemma 2 2B base) is available under `dlp/ML/dlp_lora_package/` for ML-backed DLP classification. Enable it with:
+A fine-tuned LoRA adapter (Gemma 2 2B base) is loaded from `dlp/ML/dlp_lora_package/` for ML-backed DLP classification. The adapter directory must include the trained weight artifact, either `adapter_model.safetensors` or `adapter_model.bin`.
 
 ```bash
 pip install "ascp[ascp-ml]"
+```
+
+Install a CUDA-enabled PyTorch build for the target machine, for example:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+```
+
+Warm the classifier at service startup so request handling pays only inference latency:
+
+```python
+from ascp_integration.orchestrator import ASCPOrchestrator, DLPConfig
+
+orchestrator = ASCPOrchestrator(
+    session_id="prod-session",
+    dlp_config=DLPConfig.defaults(),
+    warmup_ml=True,
+)
 ```
 
 Training and generation notebooks are in `dlp/ML/`.
@@ -546,7 +564,7 @@ pip install "ascp[ascp-crewai]"     # CrewAI adapter
 pip install "ascp[ascp-llamaindex]" # LlamaIndex adapter
 pip install "ascp[ascp-smolagents]" # smolagents adapter
 pip install "ascp[nlp]"             # spaCy NER support
-pip install "ascp[ascp-ml]"         # ML-backed DLP (requires PyTorch)
+pip install "ascp[ascp-ml]"         # ML-backed DLP (requires CUDA PyTorch)
 pip install "ascp[dev]"             # Development tools (pytest, ruff, mypy)
 ```
 

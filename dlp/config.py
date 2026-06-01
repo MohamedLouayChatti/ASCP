@@ -74,6 +74,10 @@ class DLPConfig:
     ml_base_model: str = "google/gemma-2-2b-it"
     # Path to the LoRA adapter folder.  None = use the bundled dlp_lora_package/.
     ml_lora_path: str | None = None
+    # Device policy for ML inference. "cuda" fails fast if no CUDA GPU is visible.
+    # Use "cpu" only for debugging; production ML inference is intended for GPU.
+    ml_device: str = "cuda"
+    ml_load_in_4bit: bool = True
 
     @classmethod
     def defaults(cls) -> "DLPConfig":
@@ -251,5 +255,7 @@ def load_dlp_config(policy_path: Path) -> DLPConfig:
         # ML pipeline
         ml_base_model=str(d.get("ml_base_model", "google/gemma-2-2b-it")),
         ml_lora_path=d.get("ml_lora_path"),
+        ml_device=str(d.get("ml_device", "cuda")),
+        ml_load_in_4bit=bool(d.get("ml_load_in_4bit", True)),
 
     )

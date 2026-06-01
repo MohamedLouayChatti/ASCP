@@ -39,6 +39,7 @@ from .enforcer import PolicyEnforcer
 _scanner: DLPScanner | None = None
 _enforcer: PolicyEnforcer | None = None
 _canary_engine: CanaryEngine | None = None
+_config: DLPConfig | None = None
 
 
 def init(config: Union[Path, DLPConfig, None] = None) -> None:
@@ -46,7 +47,7 @@ def init(config: Union[Path, DLPConfig, None] = None) -> None:
     Initialise the DLP module with a given policy file or DLPConfig object.
     If config is None or the file does not exist, built-in safe defaults are used.
     """
-    global _scanner, _enforcer, _canary_engine
+    global _scanner, _enforcer, _canary_engine, _config
 
     if isinstance(config, DLPConfig):
         loaded_config = config
@@ -57,11 +58,25 @@ def init(config: Union[Path, DLPConfig, None] = None) -> None:
     _canary_engine = CanaryEngine(loaded_config)
     _scanner = DLPScanner(loaded_config, _canary_engine)
     _enforcer = PolicyEnforcer(loaded_config)
+    _config = loaded_config
 
 
 def _ensure_initialized() -> None:
     if _scanner is None:
         init(Path("nonexistent_default.yaml"))
+
+
+def warmup_ml() -> None:
+    """
+    Load the ML classifier once during application startup.
+
+    This avoids paying model-load latency on the first request and fails fast if
+    CUDA, model dependencies, or the bundled LoRA adapter are not available.
+    """
+    _ensure_initialized()
+    from .ml import warmup
+
+    warmup(_config)
 
 
 # ── Injection API ─────────────────────────────────────────────────────────────

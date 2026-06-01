@@ -41,10 +41,12 @@ logger = logging.getLogger(__name__)
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
 _engine: Optional["MLInferenceEngine"] = None
+_engine_load_error: Exception | None = None
 
 # ── Resolve the adapter path relative to this file ───────────────────────────
 _THIS_DIR = Path(__file__).parent
 _DEFAULT_LORA_PATH = _THIS_DIR / "ML" / "dlp_lora_package"
+_ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
 
 # ── Canonical base model (same as training) ───────────────────────────────────
 _BASE_MODEL_ID = "google/gemma-2-2b-it"
@@ -85,13 +87,49 @@ class MLInferenceEngine:
         from peft import PeftModel
 
         base_model_id: str = getattr(self.config, "ml_base_model", _BASE_MODEL_ID) or _BASE_MODEL_ID
-        lora_path = Path(getattr(self.config, "ml_lora_path", None) or _DEFAULT_LORA_PATH)
+        lora_path = Path(getattr(self.config, "ml_lora_path", None) or _DEFAULT_LORA_PATH).expanduser().resolve()
+        device_policy = str(getattr(self.config, "ml_device", "cuda") or "cuda").lower()
+        load_in_4bit = bool(getattr(self.config, "ml_load_in_4bit", True))
 
         if not lora_path.exists():
             raise FileNotFoundError(
                 f"LoRA adapter not found at '{lora_path}'. "
                 "Make sure the dlp_lora_package/ folder is present in dlp/ML/."
             )
+        if not any((lora_path / filename).is_file() for filename in _ADAPTER_WEIGHT_FILES):
+            expected = " or ".join(_ADAPTER_WEIGHT_FILES)
+            raise FileNotFoundError(
+                f"LoRA adapter weights not found in '{lora_path}'. "
+                f"Expected {expected}. Restore the trained adapter artifact before enabling ML."
+            )
+
+        if device_policy not in {"cuda", "auto", "cpu"}:
+            raise ValueError("DLP ML config ml_device must be one of: 'cuda', 'auto', 'cpu'.")
+
+        cuda_available = torch.cuda.is_available()
+        if device_policy in {"cuda", "auto"}:
+            if not cuda_available:
+                raise RuntimeError(
+                    "DLP ML inference requires a CUDA-visible PyTorch installation. "
+                    "Install a CUDA build of torch and verify torch.cuda.is_available() is True. "
+                    "Set ml_device='cpu' only for local debugging."
+                )
+            selected_device = "cuda"
+            device_map: str | dict[str, int] = {"": 0}
+            compute_dtype = (
+                torch.bfloat16
+                if torch.cuda.is_bf16_supported()
+                else torch.float16
+            )
+        else:
+            selected_device = "cpu"
+            device_map = "cpu"
+            compute_dtype = torch.float32
+            if load_in_4bit:
+                raise RuntimeError(
+                    "DLP ML 4-bit inference is configured but CUDA is disabled. "
+                    "Set ml_device='cuda' for production, or set ml_load_in_4bit=False for CPU debugging."
+                )
 
         logger.info("DLP-ML: Loading tokenizer from adapter package (%s)…", lora_path)
 
@@ -106,25 +144,34 @@ class MLInferenceEngine:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.padding_side = "right"
 
-        # ── 4-bit quantization — mirrors the training BitsAndBytesConfig exactly
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-        )
+        bnb_config = None
+        if load_in_4bit:
+            # 4-bit quantization mirrors training and should run on CUDA.
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=compute_dtype,
+            )
 
-        logger.info("DLP-ML: Loading base model '%s' (4-bit NF4)…", base_model_id)
+        quantization_label = "4-bit NF4" if load_in_4bit else str(compute_dtype).replace("torch.", "")
+        logger.info(
+            "DLP-ML: Loading base model '%s' on %s (%s)…",
+            base_model_id,
+            selected_device,
+            quantization_label,
+        )
         logger.info("DLP-ML: On first run this will download ~1.5 GB from HuggingFace.")
 
-        # device_map="auto" picks GPU if available, otherwise CPU (slow but functional)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            base_model_id,
-            quantization_config=bnb_config,
-            device_map="auto",
-            dtype=torch.bfloat16,
-            low_cpu_mem_usage=True,
-        )
+        model_kwargs: dict[str, Any] = {
+            "device_map": device_map,
+            "dtype": compute_dtype,
+            "low_cpu_mem_usage": True,
+        }
+        if bnb_config is not None:
+            model_kwargs["quantization_config"] = bnb_config
+
+        self.model = AutoModelForCausalLM.from_pretrained(base_model_id, **model_kwargs)
         self.model.config.use_cache = True  # inference mode — cache is beneficial
 
         logger.info("DLP-ML: Applying LoRA adapter from '%s'…", lora_path)
@@ -132,6 +179,7 @@ class MLInferenceEngine:
             self.model,
             str(lora_path),
             is_trainable=False,
+            local_files_only=True,
         )
         self.model.eval()
         logger.info("DLP-ML: Engine ready.")
@@ -277,9 +325,17 @@ def classify(
     can still make a safe decision.
     """
     global _engine
+    global _engine_load_error
 
     try:
         if _engine is None:
+            if _engine_load_error is not None:
+                logger.error(
+                    "DLP-ML: Previous engine load failed (%s). "
+                    "Call dlp.ml.reset_engine() after fixing the environment.",
+                    _engine_load_error,
+                )
+                return DLPAction.ESCALATE
             if config is None:
                 config = DLPConfig.defaults()
             _engine = MLInferenceEngine(config)
@@ -293,14 +349,34 @@ def classify(
         return DLPAction.ESCALATE
 
     except FileNotFoundError as exc:
+        _engine_load_error = exc
         logger.error("DLP-ML: %s", exc)
         return DLPAction.ESCALATE
     except Exception as exc:  # noqa: BLE001
+        _engine_load_error = exc
         logger.exception("DLP-ML: Inference failed (%s) — defaulting to ESCALATE.", exc)
         return DLPAction.ESCALATE
+
+
+def warmup(config: Optional[DLPConfig] = None) -> None:
+    """Load the ML engine before serving traffic."""
+    global _engine
+    global _engine_load_error
+
+    if _engine is not None:
+        return
+    if _engine_load_error is not None:
+        raise RuntimeError(
+            "DLP ML engine previously failed to load. Call reset_engine() before retrying."
+        ) from _engine_load_error
+    if config is None:
+        config = DLPConfig.defaults()
+    _engine = MLInferenceEngine(config)
 
 
 def reset_engine() -> None:
     """Force the next classify() call to reload the engine. Useful in tests."""
     global _engine
+    global _engine_load_error
     _engine = None
+    _engine_load_error = None

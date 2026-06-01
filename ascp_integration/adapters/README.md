@@ -152,4 +152,7 @@ pip install "ascp[ascp-smolagents]"
 
 The core SDK default DLP configuration does not download an ML model
 implicitly. ML-backed DLP can be enabled with the `ascp-ml` extra and an
-explicit DLP config.
+explicit DLP config. Production ML inference expects a CUDA-enabled PyTorch
+install and the bundled LoRA directory must contain `adapter_model.safetensors`
+or `adapter_model.bin`. Pass `warmup_ml=True` to `ASCPOrchestrator` at service
+startup to load the model once before request traffic.
