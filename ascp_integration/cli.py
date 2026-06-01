@@ -8,9 +8,18 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Sequence
 
 import httpx
+
+from ascp_integration.dashboard import (
+    DEFAULT_DASHBOARD_HOST,
+    DEFAULT_DASHBOARD_PORT,
+    DEFAULT_EVENT_LIMIT,
+    build_dashboard_options,
+    run_dashboard,
+)
 
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
@@ -49,6 +58,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 skip_start=args.skip_start,
             )
         )
+    if args.command == "local-dashboard":
+        return run_dashboard(build_dashboard_options(args))
 
     parser.print_help()
     return 1
@@ -158,6 +169,35 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     setup.add_argument("--skip-install", action="store_true", help="Do not install Ollama.")
     setup.add_argument("--skip-start", action="store_true", help="Do not start Ollama.")
+
+    dashboard = subparsers.add_parser(
+        "local-dashboard",
+        description="Serve a local ASCP telemetry dashboard.",
+    )
+    dashboard.add_argument("--host", default=DEFAULT_DASHBOARD_HOST, help="Host interface to bind.")
+    dashboard.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_DASHBOARD_PORT,
+        help="Preferred local dashboard port. If busy, ASCP tries the next ports.",
+    )
+    dashboard.add_argument(
+        "--log-path",
+        action="append",
+        type=Path,
+        help=(
+            "Telemetry JSONL file to watch. May be passed more than once. "
+            "Defaults to ASCP's automatic telemetry file plus ./ascp_logs.jsonl "
+            "and ./logs/*.jsonl."
+        ),
+    )
+    dashboard.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_EVENT_LIMIT,
+        help="Maximum events returned to the browser per refresh.",
+    )
+    dashboard.add_argument("--no-open", action="store_true", help="Do not open a browser tab.")
     return parser
 
 

@@ -1,0 +1,936 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ASCP Local Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --panel-2: #f0f4f6;
+      --text: #182027;
+      --muted: #64727f;
+      --line: #d9e1e7;
+      --blue: #2563eb;
+      --cyan: #0f8194;
+      --green: #16803c;
+      --amber: #a16107;
+      --red: #bb2626;
+      --ink: #0e1720;
+      --shadow: 0 10px 22px rgba(20, 32, 43, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button, input, select {
+      font: inherit;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 100vh;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding: 14px 18px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+
+    .brand {
+      min-width: 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.2;
+      font-weight: 750;
+      color: var(--ink);
+    }
+
+    .subtitle {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .control, .tool-button {
+      height: 34px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 6px;
+    }
+
+    .control {
+      min-width: 150px;
+      padding: 0 10px;
+    }
+
+    .search {
+      min-width: 220px;
+    }
+
+    .tool-button {
+      width: 36px;
+      display: inline-grid;
+      place-items: center;
+      cursor: pointer;
+    }
+
+    .tool-button:hover {
+      border-color: #b9c6d0;
+      background: var(--panel-2);
+    }
+
+    .live-pill {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #eef6f4;
+      color: #135f55;
+      font-size: 12px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 0 4px rgba(22, 128, 60, 0.12);
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      gap: 14px;
+      padding: 14px;
+      min-height: 0;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-rows: auto minmax(180px, 28vh) minmax(360px, 1fr);
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(112px, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      min-height: 78px;
+      box-shadow: var(--shadow);
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.3;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 8px;
+      font-size: 25px;
+      line-height: 1;
+      color: var(--ink);
+    }
+
+    .panel {
+      min-width: 0;
+      min-height: 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .panel-title {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 750;
+      color: var(--ink);
+    }
+
+    .panel-note {
+      color: var(--muted);
+      font-size: 12px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .chart-wrap {
+      height: calc(100% - 42px);
+      padding: 10px;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .table-wrap {
+      height: calc(100% - 42px);
+      overflow: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 12px;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #fbfcfd;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    tr {
+      cursor: pointer;
+    }
+
+    tr:hover td, tr.selected td {
+      background: #eef6f4;
+    }
+
+    .time-col { width: 118px; }
+    .type-col { width: 150px; }
+    .risk-col { width: 84px; }
+    .status-col { width: 92px; }
+    .source-col { width: 78px; }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    }
+
+    .truncate {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 750;
+      line-height: 1.2;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+
+    .badge.low, .badge.info {
+      color: #185b32;
+      background: #e9f7ee;
+      border-color: #b9e7c7;
+    }
+
+    .badge.moderate, .badge.warn {
+      color: #704600;
+      background: #fff5dd;
+      border-color: #f0d48d;
+    }
+
+    .badge.high, .badge.error {
+      color: #7d2f00;
+      background: #fff0e6;
+      border-color: #f1be99;
+    }
+
+    .badge.critical {
+      color: #8f1b1b;
+      background: #feecec;
+      border-color: #efb4b4;
+    }
+
+    aside {
+      display: grid;
+      grid-template-rows: minmax(210px, 0.8fr) minmax(260px, 1.2fr);
+      gap: 14px;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .list {
+      height: calc(100% - 42px);
+      overflow: auto;
+    }
+
+    .group-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      cursor: pointer;
+    }
+
+    .group-item:hover, .group-item.active {
+      background: #eef6f4;
+    }
+
+    .group-main {
+      min-width: 0;
+      font-size: 12px;
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .group-sub {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .detail {
+      height: calc(100% - 42px);
+      overflow: auto;
+      padding: 12px;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 95px minmax(0, 1fr);
+      gap: 7px 10px;
+      font-size: 12px;
+      align-items: start;
+    }
+
+    .detail-grid dt {
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .detail-grid dd {
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    pre {
+      margin: 12px 0 0;
+      padding: 10px;
+      background: #111922;
+      color: #eaf2f8;
+      border-radius: 6px;
+      overflow: auto;
+      font-size: 11px;
+      line-height: 1.45;
+      max-height: 360px;
+    }
+
+    .empty {
+      display: grid;
+      place-items: center;
+      min-height: 150px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+      padding: 18px;
+    }
+
+    .filter-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      max-width: 100%;
+      color: var(--muted);
+    }
+
+    .link-button {
+      border: 0;
+      background: transparent;
+      color: var(--blue);
+      cursor: pointer;
+      padding: 0;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    @media (max-width: 1040px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+
+      aside {
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: minmax(260px, 1fr);
+      }
+
+      .metrics {
+        grid-template-columns: repeat(3, minmax(120px, 1fr));
+      }
+    }
+
+    @media (max-width: 720px) {
+      header {
+        grid-template-columns: 1fr;
+      }
+
+      .toolbar {
+        justify-content: flex-start;
+      }
+
+      .search {
+        min-width: min(100%, 260px);
+      }
+
+      main {
+        padding: 10px;
+      }
+
+      .workspace {
+        grid-template-rows: auto 190px minmax(360px, 1fr);
+      }
+
+      .metrics, aside {
+        grid-template-columns: 1fr;
+      }
+
+      aside {
+        grid-template-rows: 260px 420px;
+      }
+
+      .time-col, .type-col, .risk-col, .status-col {
+        width: auto;
+      }
+
+      th:nth-child(5), td:nth-child(5) {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <h1>ASCP Local Dashboard</h1>
+        <div class="subtitle" id="sourceLine">Waiting for telemetry</div>
+      </div>
+      <div class="toolbar">
+        <select class="control" id="typeFilter" aria-label="Event type filter">
+          <option value="">All events</option>
+        </select>
+        <select class="control" id="severityFilter" aria-label="Severity filter">
+          <option value="">All severities</option>
+          <option value="info">Info</option>
+          <option value="warn">Warn</option>
+          <option value="error">Error</option>
+          <option value="critical">Critical</option>
+        </select>
+        <input class="control search" id="searchInput" placeholder="Search events" aria-label="Search events">
+        <div class="live-pill" id="liveStatus"><span class="dot"></span><span>Live ready</span></div>
+        <button class="tool-button" id="pauseButton" title="Pause live refresh" aria-label="Pause live refresh">II</button>
+        <button class="tool-button" id="refreshButton" title="Refresh now" aria-label="Refresh now">R</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="workspace">
+        <div class="metrics">
+          <div class="metric"><span>Events</span><strong id="metricEvents">0</strong></div>
+          <div class="metric"><span>Requests</span><strong id="metricRequests">0</strong></div>
+          <div class="metric"><span>Sessions</span><strong id="metricSessions">0</strong></div>
+          <div class="metric"><span>Max risk</span><strong id="metricRisk">0.00</strong></div>
+          <div class="metric"><span>Blocks</span><strong id="metricBlocks">0</strong></div>
+          <div class="metric"><span>Live events</span><strong id="metricLive">0</strong></div>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2 class="panel-title">Risk Timeline</h2>
+            <div class="panel-note" id="chartNote">Last 0 events</div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="riskChart" width="1200" height="260" aria-label="Risk timeline"></canvas>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2 class="panel-title">Telemetry Events</h2>
+            <div class="panel-note" id="updateLine">Waiting for first refresh</div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th class="time-col">Time</th>
+                  <th class="type-col">Event</th>
+                  <th class="risk-col">Risk</th>
+                  <th class="status-col">Severity</th>
+                  <th class="source-col">Source</th>
+                  <th>Reason</th>
+                  <th>Correlation</th>
+                </tr>
+              </thead>
+              <tbody id="eventsBody">
+                <tr><td colspan="7"><div class="empty">No telemetry events loaded.</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <aside>
+        <section class="panel">
+          <div class="panel-head">
+            <h2 class="panel-title">Requests</h2>
+            <div class="panel-note" id="requestNote">0 groups</div>
+          </div>
+          <div class="list" id="requestList">
+            <div class="empty">No request groups yet.</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2 class="panel-title">Event Detail</h2>
+            <div class="panel-note" id="detailNote">Select an event</div>
+          </div>
+          <div class="detail" id="detailPane">
+            <div class="empty">Select a telemetry event to inspect its payload.</div>
+          </div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    const state = {
+      events: [],
+      filtered: [],
+      selectedId: "",
+      selectedCorrelation: "",
+      paused: false,
+      timer: null
+    };
+
+    const els = {
+      sourceLine: document.getElementById("sourceLine"),
+      typeFilter: document.getElementById("typeFilter"),
+      severityFilter: document.getElementById("severityFilter"),
+      pauseButton: document.getElementById("pauseButton"),
+      refreshButton: document.getElementById("refreshButton"),
+      metricEvents: document.getElementById("metricEvents"),
+      metricRequests: document.getElementById("metricRequests"),
+      metricSessions: document.getElementById("metricSessions"),
+      metricRisk: document.getElementById("metricRisk"),
+      metricBlocks: document.getElementById("metricBlocks"),
+      metricLive: document.getElementById("metricLive"),
+      chartNote: document.getElementById("chartNote"),
+      updateLine: document.getElementById("updateLine"),
+      eventsBody: document.getElementById("eventsBody"),
+      requestList: document.getElementById("requestList"),
+      detailPane: document.getElementById("detailPane"),
+      detailNote: document.getElementById("detailNote"),
+      chart: document.getElementById("riskChart"),
+      searchInput: document.getElementById("searchInput"),
+      liveStatus: document.getElementById("liveStatus")
+    };
+
+    els.typeFilter.addEventListener("change", render);
+    els.severityFilter.addEventListener("change", render);
+    els.searchInput.addEventListener("input", render);
+    els.refreshButton.addEventListener("click", fetchEvents);
+    els.pauseButton.addEventListener("click", () => {
+      state.paused = !state.paused;
+      els.pauseButton.textContent = state.paused ? ">" : "II";
+      els.pauseButton.title = state.paused ? "Resume live refresh" : "Pause live refresh";
+    });
+
+    async function fetchEvents() {
+      if (state.paused) return;
+      try {
+        const response = await fetch("/api/events?limit=700", { cache: "no-store" });
+        const payload = await response.json();
+        state.events = Array.isArray(payload.events) ? payload.events : [];
+        updateFilters();
+        render(payload);
+      } catch (error) {
+        els.updateLine.textContent = `Refresh failed: ${error}`;
+      }
+    }
+
+    function updateFilters() {
+      const existing = els.typeFilter.value;
+      const types = [...new Set(state.events.map(e => e.event_type || "unknown"))].sort();
+      els.typeFilter.innerHTML = `<option value="">All events</option>` + types
+        .map(type => `<option value="${escapeHtml(type)}">${label(type)}</option>`)
+        .join("");
+      els.typeFilter.value = types.includes(existing) ? existing : "";
+    }
+
+    function render(payload = null) {
+      const typeFilter = els.typeFilter.value;
+      const severityFilter = els.severityFilter.value;
+      const search = els.searchInput.value.trim().toLowerCase();
+      state.filtered = state.events.filter(event => {
+        if (typeFilter && event.event_type !== typeFilter) return false;
+        if (severityFilter && event.severity !== severityFilter) return false;
+        if (state.selectedCorrelation && event.correlation_id !== state.selectedCorrelation) return false;
+        if (search && !eventMatchesSearch(event, search)) return false;
+        return true;
+      });
+
+      renderSummary(payload);
+      renderChart();
+      renderRows();
+      renderRequests();
+      renderDetail();
+    }
+
+    function renderSummary(payload) {
+      const summary = summarize(state.events);
+      els.metricEvents.textContent = summary.totalEvents.toString();
+      els.metricRequests.textContent = summary.requests.toString();
+      els.metricSessions.textContent = summary.sessions.toString();
+      els.metricRisk.textContent = summary.maxRisk.toFixed(2);
+      els.metricBlocks.textContent = summary.blocks.toString();
+      els.metricLive.textContent = String(payload?.live?.event_count || 0);
+      els.chartNote.textContent = `Last ${state.filtered.length} events`;
+      els.updateLine.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+      els.liveStatus.querySelector("span:last-child").textContent =
+        payload?.live?.event_count ? "Live receiving" : "Live ready";
+
+      if (payload && Array.isArray(payload.files) && payload.files.length) {
+        const fileNames = payload.files.map(file => file.name).join(", ");
+        const liveCount = payload.live?.event_count || 0;
+        els.sourceLine.textContent = liveCount
+          ? `${fileNames || "No file yet"} plus live stream`
+          : fileNames;
+      } else if (payload) {
+        els.sourceLine.textContent = payload.live?.event_count
+          ? "Live stream only"
+          : "Waiting for ASCP telemetry";
+      }
+    }
+
+    function renderRows() {
+      if (!state.filtered.length) {
+        els.eventsBody.innerHTML = `<tr><td colspan="7"><div class="empty">No matching telemetry events.</div></td></tr>`;
+        return;
+      }
+
+      els.eventsBody.innerHTML = state.filtered.slice().reverse().map(event => {
+        const id = event.event_id || `${event._file}:${event._line}`;
+        const selected = id === state.selectedId ? "selected" : "";
+        const risk = Number(event.risk_score || 0);
+        return `
+          <tr class="${selected}" data-id="${escapeHtml(id)}">
+            <td class="mono">${formatTime(event.timestamp)}</td>
+            <td><span class="badge ${escapeHtml(event._risk_band || "low")}">${escapeHtml(label(event.event_type || "unknown"))}</span></td>
+            <td class="mono">${risk.toFixed(2)}</td>
+            <td><span class="badge ${escapeHtml(event.severity || "info")}">${escapeHtml(event.severity || "info")}</span></td>
+            <td>${escapeHtml(event._source === "live" ? "Live" : "File")}</td>
+            <td class="truncate">${escapeHtml(event.reason_code || "")}</td>
+            <td class="mono truncate">${escapeHtml(shortId(event.correlation_id || ""))}</td>
+          </tr>`;
+      }).join("");
+
+      els.eventsBody.querySelectorAll("tr[data-id]").forEach(row => {
+        row.addEventListener("click", () => {
+          state.selectedId = row.getAttribute("data-id") || "";
+          render();
+        });
+      });
+    }
+
+    function renderRequests() {
+      const groups = groupByCorrelation(state.events);
+      document.getElementById("requestNote").innerHTML = state.selectedCorrelation
+        ? `<span class="filter-note">Filtered <button class="link-button" id="clearRequestFilter">Clear</button></span>`
+        : `${groups.length} groups`;
+      if (!groups.length) {
+        els.requestList.innerHTML = `<div class="empty">No request groups yet.</div>`;
+        return;
+      }
+      els.requestList.innerHTML = groups.map(group => {
+        const active = group.id === state.selectedCorrelation ? "active" : "";
+        return `
+          <div class="group-item ${active}" data-correlation="${escapeHtml(group.id)}">
+            <div class="group-main">
+              <div class="truncate mono">${escapeHtml(shortId(group.id))}</div>
+              <div class="group-sub">${group.count} events &middot; max risk ${group.maxRisk.toFixed(2)}</div>
+            </div>
+            <span class="badge ${escapeHtml(riskBand(group.maxRisk))}">${escapeHtml(group.lastType)}</span>
+          </div>`;
+      }).join("");
+
+      els.requestList.querySelectorAll("[data-correlation]").forEach(item => {
+        item.addEventListener("click", () => {
+          const id = item.getAttribute("data-correlation") || "";
+          state.selectedCorrelation = state.selectedCorrelation === id ? "" : id;
+          render();
+        });
+      });
+      const clearButton = document.getElementById("clearRequestFilter");
+      if (clearButton) {
+        clearButton.addEventListener("click", () => {
+          state.selectedCorrelation = "";
+          render();
+        });
+      }
+    }
+
+    function renderDetail() {
+      const event = findSelectedEvent();
+      if (!event) {
+        els.detailNote.textContent = "Select an event";
+        els.detailPane.innerHTML = `<div class="empty">Select a telemetry event to inspect its payload.</div>`;
+        return;
+      }
+      els.detailNote.textContent = event.event_type || "event";
+      const risk = Number(event.risk_score || 0);
+      els.detailPane.innerHTML = `
+        <dl class="detail-grid">
+          <dt>Time</dt><dd>${escapeHtml(event.timestamp || "")}</dd>
+          <dt>Type</dt><dd>${escapeHtml(label(event.event_type || "unknown"))}</dd>
+          <dt>Layer</dt><dd>${escapeHtml(event._layer || "SDK")}</dd>
+          <dt>Severity</dt><dd><span class="badge ${escapeHtml(event.severity || "info")}">${escapeHtml(event.severity || "info")}</span></dd>
+          <dt>Risk</dt><dd class="mono">${risk.toFixed(4)}</dd>
+          <dt>Reason</dt><dd>${escapeHtml(event.reason_code || "")}</dd>
+          <dt>Invariant</dt><dd>${escapeHtml(event.invariant_violated || "")}</dd>
+          <dt>Correlation</dt><dd class="mono">${escapeHtml(event.correlation_id || "")}</dd>
+          <dt>Session</dt><dd class="mono">${escapeHtml(event.session_id || "")}</dd>
+          <dt>File</dt><dd class="mono">${escapeHtml(event._file || "")}:${escapeHtml(String(event._line || ""))}</dd>
+          <dt>Source</dt><dd>${escapeHtml(event._source === "live" ? "Live stream" : "Telemetry file")}</dd>
+        </dl>
+        <pre>${escapeHtml(JSON.stringify(event, null, 2))}</pre>`;
+    }
+
+    function renderChart() {
+      const canvas = els.chart;
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(600, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(180, Math.floor(rect.height * dpr));
+      const ctx = canvas.getContext("2d");
+      ctx.scale(dpr, dpr);
+      const width = canvas.width / dpr;
+      const height = canvas.height / dpr;
+      ctx.clearRect(0, 0, width, height);
+
+      const padding = { left: 34, right: 16, top: 14, bottom: 24 };
+      const plotW = width - padding.left - padding.right;
+      const plotH = height - padding.top - padding.bottom;
+
+      ctx.strokeStyle = "#d9e1e7";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 0; i <= 4; i++) {
+        const y = padding.top + (plotH * i / 4);
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(width - padding.right, y);
+      }
+      ctx.stroke();
+
+      ctx.fillStyle = "#64727f";
+      ctx.font = "11px system-ui";
+      [1, 0.75, 0.5, 0.25, 0].forEach((value, i) => {
+        const y = padding.top + (plotH * i / 4) + 4;
+        ctx.fillText(value.toFixed(2), 3, y);
+      });
+
+      const points = state.filtered.slice(-160).map((event, index, arr) => {
+        const risk = Math.max(0, Math.min(1, Number(event.risk_score || 0)));
+        const x = padding.left + (arr.length <= 1 ? plotW : (plotW * index / (arr.length - 1)));
+        const y = padding.top + plotH - (plotH * risk);
+        return { x, y, risk, event };
+      });
+
+      if (!points.length) return;
+
+      ctx.strokeStyle = "#2563eb";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        if (index === 0) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+      });
+      ctx.stroke();
+
+      points.forEach(point => {
+        ctx.fillStyle = colorForRisk(point.risk);
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, point.risk >= 0.8 ? 4 : 3, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    function summarize(events) {
+      const correlations = new Set();
+      const sessions = new Set();
+      let maxRisk = 0;
+      let blocks = 0;
+      events.forEach(event => {
+        if (event.correlation_id) correlations.add(event.correlation_id);
+        if (event.session_id) sessions.add(event.session_id);
+        const risk = Number(event.risk_score || 0);
+        maxRisk = Math.max(maxRisk, risk);
+        if (event.event_type === "policy_block" || event.severity === "critical") blocks += 1;
+      });
+      return { totalEvents: events.length, requests: correlations.size, sessions: sessions.size, maxRisk, blocks };
+    }
+
+    function groupByCorrelation(events) {
+      const map = new Map();
+      events.forEach(event => {
+        const id = event.correlation_id || "uncorrelated";
+        const risk = Number(event.risk_score || 0);
+        const current = map.get(id) || { id, count: 0, maxRisk: 0, lastType: "event", lastTime: 0 };
+        current.count += 1;
+        current.maxRisk = Math.max(current.maxRisk, risk);
+        current.lastType = label(event.event_type || "event");
+        current.lastTime = Math.max(current.lastTime, Number(event._timestamp_ms || 0));
+        map.set(id, current);
+      });
+      return [...map.values()].sort((a, b) => b.lastTime - a.lastTime);
+    }
+
+    function findSelectedEvent() {
+      if (!state.selectedId) return null;
+      return state.events.find(event => {
+        const id = event.event_id || `${event._file}:${event._line}`;
+        return id === state.selectedId;
+      }) || null;
+    }
+
+    function eventMatchesSearch(event, search) {
+      const fields = [
+        event.event_type,
+        event.severity,
+        event.reason_code,
+        event.correlation_id,
+        event.session_id,
+        event.invariant_violated,
+        JSON.stringify(event.details || {})
+      ];
+      return fields.some(value => String(value || "").toLowerCase().includes(search));
+    }
+
+    function label(value) {
+      return String(value || "")
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, char => char.toUpperCase());
+    }
+
+    function shortId(value) {
+      if (!value) return "";
+      return value.length > 18 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
+    }
+
+    function formatTime(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleTimeString();
+    }
+
+    function riskBand(value) {
+      const score = Number(value || 0);
+      if (score >= 0.8) return "critical";
+      if (score >= 0.6) return "high";
+      if (score >= 0.3) return "moderate";
+      return "low";
+    }
+
+    function colorForRisk(value) {
+      if (value >= 0.8) return "#bb2626";
+      if (value >= 0.6) return "#a16107";
+      if (value >= 0.3) return "#0f8194";
+      return "#16803c";
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    window.addEventListener("resize", renderChart);
+    fetchEvents();
+    state.timer = setInterval(fetchEvents, 2000);
+  </script>
+</body>
+</html>

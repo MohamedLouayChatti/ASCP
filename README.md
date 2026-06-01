@@ -345,6 +345,42 @@ ascp setup-grounding --chat-model llama3.2 --embed-model hf.co/CompendiumLabs/bg
 
 ASCP does not silently install system services during `pip install`. The setup command is explicit because it may install Ollama, launch a local server, and download model files.
 
+### Local telemetry dashboard
+
+External SDK users can run a local dashboard beside their client application:
+
+```bash
+ascp local-dashboard
+```
+
+The dashboard serves on `http://127.0.0.1:8765` by default and opens a browser tab. Client applications do not need to create a `logs/` directory or pass a `log_path`:
+
+```python
+orchestrator = ASCPOrchestrator(session_id="my-session")
+```
+
+When the dashboard is running, ASCP SDK telemetry is pushed to it live through a localhost-only ingest endpoint. ASCP also keeps a durable per-user JSONL telemetry file, so events are still visible if the dashboard starts after the client application. For compatibility, the dashboard also watches telemetry in the current working directory:
+
+```text
+automatic ASCP telemetry file
+./ascp_logs.jsonl
+./logs/*.jsonl
+```
+
+The automatic telemetry location can be overridden with `ASCP_TELEMETRY_PATH`. To watch a specific file explicitly:
+
+```bash
+ascp local-dashboard --log-path logs/external_user_ascp_demo.jsonl
+```
+
+Useful options:
+
+```bash
+ascp local-dashboard --no-open
+ascp local-dashboard --port 8877
+ascp local-dashboard --host 127.0.0.1
+```
+
 ---
 
 ## Layer D — Risk Scoring & Telemetry

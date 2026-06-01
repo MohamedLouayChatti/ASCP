@@ -19,6 +19,7 @@ from layerd.risk import (
     compute_risk_score,
 )
 from layerd.telemetry.events import EventType, SeverityLevel, TelemetryEvent
+from layerd.telemetry.paths import default_telemetry_path
 from layerd.telemetry.sink_jsonl import emit_jsonl
 
 logger = logging.getLogger(__name__)
@@ -43,14 +44,14 @@ class ASCPOrchestrator:
     def __init__(
         self,
         session_id: str,
-        log_path: str = "ascp_logs.jsonl",
+        log_path: str | Path | None = None,
         *,
         layer_b_engine: LayerBEngine | None = None,
         dlp_config: Path | Any | None = None,
         warmup_ml: bool = False,
     ) -> None:
         self.session_id = session_id
-        self.log_path = log_path
+        self.log_path = str(Path(log_path).expanduser()) if log_path else str(default_telemetry_path())
 
         logger.info("Initializing Layer C (DLP)...")
         dlp.init(dlp_config if dlp_config is not None else _sdk_default_dlp_config())

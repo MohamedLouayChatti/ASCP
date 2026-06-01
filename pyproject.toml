@@ -84,6 +84,7 @@ ignore_missing_imports = true
 [tool.hatch.build.targets.wheel]
 packages = ["ascp_integration", "dlp", "grounding", "layerb", "layerd"]
 include = [
+    "ascp_integration/dashboard.html",
     "ascp_integration/adapters/proto/*.proto",
     "dlp/policy.default.yaml",
     "dlp/ML/dlp_lora_package/*",
