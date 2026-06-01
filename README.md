@@ -292,13 +292,10 @@ A fine-tuned LoRA adapter (Gemma 2 2B base) is loaded from `dlp/ML/dlp_lora_pack
 
 ```bash
 pip install "ascp[ascp-ml]"
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.version.cuda)"
 ```
 
-Install a CUDA-enabled PyTorch build for the target machine, for example:
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu121
-```
+The `ascp-ml` extra installs CUDA PyTorch wheels directly for supported Windows and Linux x86_64 Python versions.
 
 Warm the classifier at service startup so request handling pays only inference latency:
 
