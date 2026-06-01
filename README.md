@@ -311,6 +311,40 @@ orchestrator = ASCPOrchestrator(
 
 Training and generation notebooks are in `dlp/ML/`.
 
+### Layer A grounding backend
+
+Layer A can use an optional local Ollama backend for claim extraction and semantic support scoring. ASCP provides a guided setup command:
+
+```bash
+ascp setup-grounding
+```
+
+The command is transparent and asks before each major action. It checks whether the `ollama` CLI is installed, offers to install it on supported platforms, starts the local server when needed, pulls the configured models, and validates the chat and embedding endpoints.
+
+Default models:
+
+```text
+llama3.2
+hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:latest
+```
+
+For unattended setup in a controlled environment:
+
+```bash
+ascp setup-grounding --yes
+```
+
+Useful options:
+
+```bash
+ascp setup-grounding --skip-install
+ascp setup-grounding --skip-start
+ascp setup-grounding --ollama-url http://localhost:11434
+ascp setup-grounding --chat-model llama3.2 --embed-model hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:latest
+```
+
+ASCP does not silently install system services during `pip install`. The setup command is explicit because it may install Ollama, launch a local server, and download model files.
+
 ---
 
 ## Layer D — Risk Scoring & Telemetry
@@ -473,6 +507,9 @@ Implemented RPCs: `BeginInvocation`, `EndInvocation`, `HookSystemPrompt`, `HookU
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint for local LLM extraction |
 | `OLLAMA_MODEL` | `llama3.2` | Model name for local extraction |
 | `OLLAMA_TIMEOUT` | `30.0` | Ollama request timeout in seconds |
+| `BGE_MODEL` | `hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:latest` | Ollama embedding model for semantic support scoring |
+| `BGE_TIMEOUT` | `10.0` | Ollama embedding timeout in seconds |
+| `USE_SEMANTIC_CHECKER` | `true` | Enable semantic support scoring |
 | `LAYERB_EVENT_LOG` | `logs/layer_b/events.jsonl` | Layer B event log path |
 | `LAYERB_UNKNOWN_CAPABILITY_MODE` | — | How to handle unregistered tools |
 
