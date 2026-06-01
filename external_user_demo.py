@@ -30,7 +30,7 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.tools import StructuredTool
 
 from ascp_integration.adapters.langchain_adapter import ASCPLangChainAdapter
-from ascp_integration.orchestrator import ASCPDecision, ASCPOrchestrator
+from ascp_integration.orchestrator import ASCPDecision, ASCPOrchestrator, DLPConfig
 
 
 KNOWLEDGE_BASE = [
@@ -239,6 +239,7 @@ async def main() -> None:
     orchestrator = ASCPOrchestrator(
         session_id=f"external-user-{uuid.uuid4()}",
         log_path=str(log_path),
+        dlp_config=DLPConfig.defaults()
     )
     adapter = ASCPLangChainAdapter(
         orchestrator,
