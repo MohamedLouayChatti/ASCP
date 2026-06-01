@@ -22,6 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import dlp
 from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -233,6 +234,7 @@ def print_decision(label: str, decision: ASCPDecision) -> None:
 
 
 async def main() -> None:
+    dlp.ml.reset_engine() # Clear any existing DLP engine state to ensure a clean demo run.
     log_path = Path("logs") / "external_user_ascp_demo.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
