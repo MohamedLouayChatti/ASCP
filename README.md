@@ -33,7 +33,19 @@ Replace the example path with the local path to your own ASCP checkout:
 pip install -e "C:/path/to/ASCP[ascp-langchain]"
 ```
 
-Then run the demo:
+After installing, set up grounding so the local Ollama server is running and the grounding models are available:
+
+```bash
+ascp setup-grounding
+```
+
+Then, if you want the live local dashboard that tracks logs and events, launch it on localhost port 8765:
+
+```bash
+ascp local-dashboard
+```
+
+Finally run the demo:
 
 ```bash
 python external_user_demo.py
